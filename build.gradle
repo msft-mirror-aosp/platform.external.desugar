@@ -38,6 +38,9 @@ task('fatJarCreator', type: Jar) {
     from {
         configurations.compile.collect { it.isDirectory() ? it : zipTree(it) }
     }
+    from {
+        sourceSets.main.output
+    }
     archiveName 'desugar_deploy.jar'
     manifest {
         attributes 'Main-Class': 'com.google.devtools.build.android.desugar.Desugar'
