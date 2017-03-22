@@ -32,8 +32,6 @@ import com.google.devtools.common.options.OptionsParser.OptionValueDescription;
 import com.google.devtools.common.options.OptionsParser.UnparsedOptionValueDescription;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -49,100 +47,6 @@ import java.util.Map;
  * if you're a consumer.
  */
 class OptionsParserImpl {
-
-  /**
-   * A bunch of default converters in case the user doesn't specify a
-   * different one in the field annotation.
-   */
-  static final Map<Class<?>, Converter<?>> DEFAULT_CONVERTERS = Maps.newHashMap();
-
-  static {
-    DEFAULT_CONVERTERS.put(String.class, new Converter<String>() {
-      @Override
-      public String convert(String input) {
-        return input;
-      }
-      @Override
-      public String getTypeDescription() {
-        return "a string";
-      }});
-    DEFAULT_CONVERTERS.put(int.class, new Converter<Integer>() {
-      @Override
-      public Integer convert(String input) throws OptionsParsingException {
-        try {
-          return Integer.decode(input);
-        } catch (NumberFormatException e) {
-          throw new OptionsParsingException("'" + input + "' is not an int");
-        }
-      }
-      @Override
-      public String getTypeDescription() {
-        return "an integer";
-      }});
-    DEFAULT_CONVERTERS.put(double.class, new Converter<Double>() {
-      @Override
-      public Double convert(String input) throws OptionsParsingException {
-        try {
-          return Double.parseDouble(input);
-        } catch (NumberFormatException e) {
-          throw new OptionsParsingException("'" + input + "' is not a double");
-        }
-      }
-      @Override
-      public String getTypeDescription() {
-        return "a double";
-      }});
-    DEFAULT_CONVERTERS.put(boolean.class, new Converters.BooleanConverter());
-    DEFAULT_CONVERTERS.put(TriState.class, new Converter<TriState>() {
-      @Override
-      public TriState convert(String input) throws OptionsParsingException {
-        if (input == null) {
-          return TriState.AUTO;
-        }
-        input = input.toLowerCase();
-        if (input.equals("auto")) {
-          return TriState.AUTO;
-        }
-        if (input.equals("true") || input.equals("1") || input.equals("yes") ||
-            input.equals("t") || input.equals("y")) {
-          return TriState.YES;
-        }
-        if (input.equals("false") || input.equals("0") || input.equals("no") ||
-            input.equals("f") || input.equals("n")) {
-          return TriState.NO;
-        }
-        throw new OptionsParsingException("'" + input + "' is not a boolean");
-      }
-      @Override
-      public String getTypeDescription() {
-        return "a tri-state (auto, yes, no)";
-      }});
-    DEFAULT_CONVERTERS.put(Void.class, new Converter<Void>() {
-      @Override
-      public Void convert(String input) throws OptionsParsingException {
-        if (input == null) {
-          return null;  // expected input, return is unused so null is fine.
-        }
-        throw new OptionsParsingException("'" + input + "' unexpected");
-      }
-      @Override
-      public String getTypeDescription() {
-        return "";
-      }});
-    DEFAULT_CONVERTERS.put(long.class, new Converter<Long>() {
-      @Override
-      public Long convert(String input) throws OptionsParsingException {
-        try {
-          return Long.decode(input);
-        } catch (NumberFormatException e) {
-          throw new OptionsParsingException("'" + input + "' is not a long");
-        }
-      }
-      @Override
-      public String getTypeDescription() {
-        return "a long integer";
-      }});
-  }
 
   private final OptionsData optionsData;
 
@@ -194,6 +98,10 @@ class OptionsParserImpl {
    */
   OptionsParserImpl(OptionsData optionsData) {
     this.optionsData = optionsData;
+  }
+
+  OptionsData getOptionsData() {
+    return optionsData;
   }
 
   /**
@@ -440,7 +348,8 @@ class OptionsParserImpl {
 
     // Recurse to remove any implicit or expansion flags that this flag may have added when
     // originally parsed.
-    for (String[] args : new String[][] {option.implicitRequirements(), option.expansion()}) {
+    String[] expansion = optionsData.getEvaluatedExpansion(field);
+    for (String[] args : new String[][] {option.implicitRequirements(), expansion}) {
       Iterator<String> argsIterator = Iterators.forArray(args);
       while (argsIterator.hasNext()) {
         String arg = argsIterator.next();
@@ -578,7 +487,8 @@ class OptionsParserImpl {
       }
 
       // Handle expansion options.
-      if (option.expansion().length > 0) {
+      String[] expansion = optionsData.getEvaluatedExpansion(field);
+      if (expansion.length > 0) {
         Function<Object, String> expansionSourceFunction =
             Functions.constant(
                 "expanded from option --"
@@ -587,7 +497,7 @@ class OptionsParserImpl {
                     + sourceFunction.apply(originalName));
         maybeAddDeprecationWarning(field);
         List<String> unparsed = parse(priority, expansionSourceFunction, null, originalName,
-            ImmutableList.copyOf(option.expansion()));
+            ImmutableList.copyOf(expansion));
         if (!unparsed.isEmpty()) {
           // Throw an assertion, because this indicates an error in the code that specified the
           // expansion for the current option.
@@ -701,7 +611,7 @@ class OptionsParserImpl {
         booleanValue = false;
         if (field != null) {
           // TODO(bazel-team): Add tests for these cases.
-          if (!OptionsParserImpl.isBooleanField(field)) {
+          if (!OptionsData.isBooleanField(field)) {
             throw new OptionsParsingException(
                 "Illegal use of 'no' prefix on non-boolean option: " + arg, arg);
           }
@@ -717,15 +627,18 @@ class OptionsParserImpl {
       throw new OptionsParsingException("Invalid options syntax: " + arg, arg);
     }
 
-    if (field == null) {
+    Option option = field == null ? null : field.getAnnotation(Option.class);
+
+    if (option == null
+        || OptionsParser.documentationLevel(option.category())
+            == OptionsParser.DocumentationLevel.INTERNAL) {
+      // This also covers internal options, which are treated as if they did not exist.
       throw new OptionsParsingException("Unrecognized option: " + arg, arg);
     }
 
-    Option option = field.getAnnotation(Option.class);
-
     if (value == null) {
       // Special-case boolean to supply value based on presence of "no" prefix.
-      if (OptionsParserImpl.isBooleanField(field)) {
+      if (OptionsData.isBooleanField(field)) {
         value = booleanValue ? "1" : "0";
       } else if (field.getType().equals(Void.class) && !option.wrapperOption()) {
         // This is expected, Void type options have no args (unless they're wrapper options).
@@ -782,46 +695,7 @@ class OptionsParserImpl {
     return annotation.defaultValue();
   }
 
-  static boolean isBooleanField(Field field) {
-    return field.getType().equals(boolean.class)
-        || field.getType().equals(TriState.class)
-        || findConverter(field) instanceof BoolOrEnumConverter;
-  }
-
-  static boolean isVoidField(Field field) {
-    return field.getType().equals(Void.class);
-  }
-
   static boolean isSpecialNullDefault(String defaultValueString, Field optionField) {
     return defaultValueString.equals("null") && !optionField.getType().isPrimitive();
-  }
-
-  static Converter<?> findConverter(Field optionField) {
-    Option annotation = optionField.getAnnotation(Option.class);
-    if (annotation.converter() == Converter.class) {
-      Type type;
-      if (annotation.allowMultiple()) {
-        // The OptionParserImpl already checked that the type is List<T> for some T;
-        // here we extract the type T.
-        type = ((ParameterizedType) optionField.getGenericType()).getActualTypeArguments()[0];
-      } else {
-        type = optionField.getType();
-      }
-      Converter<?> converter = DEFAULT_CONVERTERS.get(type);
-      if (converter == null) {
-        throw new AssertionError("No converter found for "
-            + type + "; possible fix: add "
-            + "converter=... to @Option annotation for "
-            + optionField.getName());
-      }
-      return converter;
-    }
-    try {
-      Class<?> converter = annotation.converter();
-      Constructor<?> constructor = converter.getConstructor(new Class<?>[0]);
-      return (Converter<?>) constructor.newInstance(new Object[0]);
-    } catch (Exception e) {
-      throw new AssertionError(e);
-    }
   }
 }
