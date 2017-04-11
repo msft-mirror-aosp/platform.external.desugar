@@ -17,8 +17,7 @@ LOCAL_IS_HOST_MODULE := true
 
 # Use Dagger2 annotation processor
 # b/25860419: annotation processors must be explicitly specified for grok
-PROCESSOR_LIBRARIES := dagger2-auto-value-host
-PROCESSOR_CLASSES := com.google.auto.value.processor.AutoValueProcessor
-include external/dagger2/java_annotation_processors.mk
+LOCAL_ANNOTATION_PROCESSORS := dagger2-auto-value-host
+LOCAL_ANNOTATION_PROCESSOR_CLASSES := com.google.auto.value.processor.AutoValueProcessor
 
 include $(BUILD_HOST_JAVA_LIBRARY)
