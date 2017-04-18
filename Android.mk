@@ -8,6 +8,7 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
     asm-5.2 \
     asm-commons-5.2 \
     asm-tree-5.2 \
+    error_prone_annotations-2.0.18 \
     guava-20.0 \
     jsr305-3.0.1 \
     dagger2-auto-value-host \
