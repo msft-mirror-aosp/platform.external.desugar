@@ -30,7 +30,6 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParser.OptionUsageRestrictions;
-import com.google.errorprone.annotations.MustBeClosed;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.FileVisitResult;
@@ -497,7 +496,6 @@ class Desugar {
   }
 
   /** Transform a Path to an {@link OutputFileProvider} */
-  @MustBeClosed
   private static OutputFileProvider toOutputFileProvider(Path path)
       throws IOException {
     if (Files.isDirectory(path)) {
@@ -508,7 +506,6 @@ class Desugar {
   }
 
   /** Transform a Path to an InputFileProvider that needs to be closed by the caller. */
-  @MustBeClosed
   private static InputFileProvider toInputFileProvider(Path path)
       throws IOException {
     if (Files.isDirectory(path)) {
