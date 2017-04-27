@@ -25,6 +25,7 @@ java_library(
     exports = [
         "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value/1.3:jar",
         "//prebuilts/tools/common/m2/repository/com/google/code/findbugs/jsr305/3.0.1:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/errorprone/error_prone_annotations/2.0.18:jar",
     ],
 )
 
