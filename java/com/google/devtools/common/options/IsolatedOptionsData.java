@@ -17,6 +17,7 @@ package com.google.devtools.common.options;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Ordering;
+import com.google.devtools.common.options.OptionsParser.ConstructionException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -93,6 +94,16 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
    */
   private final ImmutableMap<Field, Boolean> allowMultiple;
 
+  /**
+   * Mapping from each options class to whether or not it has the {@link UsesOnlyCoreTypes}
+   * annotation (unordered).
+   */
+  private final ImmutableMap<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypes;
+
+  /** These categories used to indicate OptionUsageRestrictions, but no longer. */
+  private static final ImmutableList<String> DEPRECATED_CATEGORIES = ImmutableList.of(
+      "undocumented", "hidden", "internal");
+
   private IsolatedOptionsData(
       Map<Class<? extends OptionsBase>,
       Constructor<?>> optionsClasses,
@@ -101,7 +112,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
       Map<Class<? extends OptionsBase>, ImmutableList<Field>> allOptionsFields,
       Map<Field, Object> optionDefaults,
       Map<Field, Converter<?>> converters,
-      Map<Field, Boolean> allowMultiple) {
+      Map<Field, Boolean> allowMultiple,
+      Map<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypes) {
     this.optionsClasses = ImmutableMap.copyOf(optionsClasses);
     this.nameToField = ImmutableMap.copyOf(nameToField);
     this.abbrevToField = ImmutableMap.copyOf(abbrevToField);
@@ -110,6 +122,7 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     this.optionDefaults = Collections.unmodifiableMap(optionDefaults);
     this.converters = ImmutableMap.copyOf(converters);
     this.allowMultiple = ImmutableMap.copyOf(allowMultiple);
+    this.usesOnlyCoreTypes = ImmutableMap.copyOf(usesOnlyCoreTypes);
   }
 
   protected IsolatedOptionsData(IsolatedOptionsData other) {
@@ -120,7 +133,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
         other.allOptionsFields,
         other.optionDefaults,
         other.converters,
-        other.allowMultiple);
+        other.allowMultiple,
+        other.usesOnlyCoreTypes);
   }
 
   /**
@@ -173,6 +187,10 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     return allowMultiple.get(field);
   }
 
+  public boolean getUsesOnlyCoreTypes(Class<? extends OptionsBase> optionsClass) {
+    return usesOnlyCoreTypes.get(optionsClass);
+  }
+
   /**
    * For an option that does not use {@link Option#allowMultiple}, returns its type. For an option
    * that does use it, asserts that the type is a {@code List<T>} and returns its element type
@@ -183,11 +201,11 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     if (annotation.allowMultiple()) {
       // If the type isn't a List<T>, this is an error in the option's declaration.
       if (!(fieldType instanceof ParameterizedType)) {
-        throw new AssertionError("Type of multiple occurrence option must be a List<...>");
+        throw new ConstructionException("Type of multiple occurrence option must be a List<...>");
       }
       ParameterizedType pfieldType = (ParameterizedType) fieldType;
       if (pfieldType.getRawType() != List.class) {
-        throw new AssertionError("Type of multiple occurrence option must be a List<...>");
+        throw new ConstructionException("Type of multiple occurrence option must be a List<...>");
       }
       fieldType = pfieldType.getActualTypeArguments()[0];
     }
@@ -234,7 +252,7 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
       Type type = getFieldSingularType(optionField, annotation);
       Converter<?> converter = Converters.DEFAULT_CONVERTERS.get(type);
       if (converter == null) {
-        throw new AssertionError(
+        throw new ConstructionException(
             "No converter found for "
                 + type
                 + "; possible fix: add "
@@ -251,7 +269,7 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     } catch (Exception e) {
       // This indicates an error in the Converter, and should be discovered the first time it is
       // used.
-      throw new AssertionError(e);
+      throw new ConstructionException(e);
     }
   }
 
@@ -336,9 +354,11 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
       Map<String, String> booleanAliasMap,
       String optionName) {
     // Check that the negating alias does not conflict with existing flags.
+    checkForCollisions(nameToFieldMap, "no_" + optionName, "boolean option alias");
     checkForCollisions(nameToFieldMap, "no" + optionName, "boolean option alias");
 
     // Record that the boolean option takes up additional namespace for its negating alias.
+    booleanAliasMap.put("no_" + optionName, optionName);
     booleanAliasMap.put("no" + optionName, optionName);
   }
 
@@ -361,6 +381,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     // Maps the negated boolean flag aliases to the original option name.
     Map<String, String> booleanAliasMap = new HashMap<>();
 
+    Map<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypesBuilder = new HashMap<>();
+
     // Read all Option annotations:
     for (Class<? extends OptionsBase> parsedOptionsClass : classes) {
       try {
@@ -378,7 +400,13 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
         Option annotation = field.getAnnotation(Option.class);
         String optionName = annotation.name();
         if (optionName == null) {
-          throw new AssertionError("Option cannot have a null name");
+          throw new ConstructionException("Option cannot have a null name");
+        }
+
+        if (DEPRECATED_CATEGORIES.contains(annotation.category())) {
+          throw new ConstructionException(
+              "Documentation level is no longer read from the option category. Category \""
+                  + annotation.category() + "\" in option \"" + optionName + "\" is disallowed.");
         }
 
         Type fieldType = getFieldSingularType(field, annotation);
@@ -389,14 +417,14 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
         if (converter == Converter.class) {
           Converter<?> actualConverter = Converters.DEFAULT_CONVERTERS.get(fieldType);
           if (actualConverter == null) {
-            throw new AssertionError("Cannot find converter for field of type "
+            throw new ConstructionException("Cannot find converter for field of type "
                 + field.getType() + " named " + field.getName()
                 + " in class " + field.getDeclaringClass().getName());
           }
           converter = actualConverter.getClass();
         }
         if (Modifier.isAbstract(converter.getModifiers())) {
-          throw new AssertionError("The converter type " + converter
+          throw new ConstructionException("The converter type " + converter
               + " must be a concrete type");
         }
         Type converterResultType;
@@ -404,8 +432,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
           Method convertMethod = converter.getMethod("convert", String.class);
           converterResultType = GenericTypeHelper.getActualReturnType(converter, convertMethod);
         } catch (NoSuchMethodException e) {
-          throw new AssertionError("A known converter object doesn't implement the convert"
-              + " method");
+          throw new ConstructionException(
+              "A known converter object doesn't implement the convert method");
         }
 
         if (annotation.allowMultiple()) {
@@ -413,22 +441,33 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
             Type elementType =
                 ((ParameterizedType) converterResultType).getActualTypeArguments()[0];
             if (!GenericTypeHelper.isAssignableFrom(fieldType, elementType)) {
-              throw new AssertionError("If the converter return type of a multiple occurrence " +
-                  "option is a list, then the type of list elements (" + fieldType + ") must be " +
-                  "assignable from the converter list element type (" + elementType + ")");
+              throw new ConstructionException(
+                  "If the converter return type of a multiple occurrence option is a list, then "
+                      + "the type of list elements ("
+                      + fieldType
+                      + ") must be assignable from the converter list element type ("
+                      + elementType
+                      + ")");
             }
           } else {
             if (!GenericTypeHelper.isAssignableFrom(fieldType, converterResultType)) {
-              throw new AssertionError("Type of list elements (" + fieldType +
-                  ") for multiple occurrence option must be assignable from the converter " +
-                  "return type (" + converterResultType + ")");
+              throw new ConstructionException(
+                  "Type of list elements ("
+                      + fieldType
+                      + ") for multiple occurrence option must be assignable from the converter "
+                      + "return type ("
+                      + converterResultType
+                      + ")");
             }
           }
         } else {
           if (!GenericTypeHelper.isAssignableFrom(fieldType, converterResultType)) {
-            throw new AssertionError("Type of field (" + fieldType +
-                ") must be assignable from the converter " +
-                "return type (" + converterResultType + ")");
+            throw new ConstructionException(
+                "Type of field ("
+                    + fieldType
+                    + ") must be assignable from the converter return type ("
+                    + converterResultType
+                    + ")");
           }
         }
 
@@ -461,7 +500,24 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
         convertersBuilder.put(field, findConverter(field));
 
         allowMultipleBuilder.put(field, annotation.allowMultiple());
+
+        }
+
+      boolean usesOnlyCoreTypes = parsedOptionsClass.isAnnotationPresent(UsesOnlyCoreTypes.class);
+      if (usesOnlyCoreTypes) {
+        // Validate that @UsesOnlyCoreTypes was used correctly.
+        for (Field field : fields) {
+          // The classes in coreTypes are all final. But even if they weren't, we only want to check
+          // for exact matches; subclasses would not be considered core types.
+          if (!UsesOnlyCoreTypes.CORE_TYPES.contains(field.getType())) {
+            throw new ConstructionException(
+                "Options class '" + parsedOptionsClass.getName() + "' is marked as "
+                + "@UsesOnlyCoreTypes, but field '" + field.getName()
+                + "' has type '" + field.getType().getName() + "'");
+          }
+        }
       }
+      usesOnlyCoreTypesBuilder.put(parsedOptionsClass, usesOnlyCoreTypes);
     }
 
     return new IsolatedOptionsData(
@@ -471,7 +527,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
         allOptionsFieldsBuilder,
         optionDefaultsBuilder,
         convertersBuilder,
-        allowMultipleBuilder);
+        allowMultipleBuilder,
+        usesOnlyCoreTypesBuilder);
   }
 
 }
