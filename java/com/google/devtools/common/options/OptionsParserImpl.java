@@ -85,7 +85,7 @@ class OptionsParserImpl {
   private final List<String> warnings = new ArrayList<>();
 
   private boolean allowSingleDashLongOptions = false;
-  
+
   private ArgsPreProcessor argsPreProcessor =
       new ArgsPreProcessor() {
         @Override
@@ -93,7 +93,7 @@ class OptionsParserImpl {
           return args;
         }
       };
-  
+
   /**
    * Create a new parser object
    */
@@ -112,29 +112,10 @@ class OptionsParserImpl {
   void setAllowSingleDashLongOptions(boolean allowSingleDashLongOptions) {
     this.allowSingleDashLongOptions = allowSingleDashLongOptions;
   }
-  
+
   /** Sets the ArgsPreProcessor for manipulations of the options before parsing. */
   void setArgsPreProcessor(ArgsPreProcessor preProcessor) {
     this.argsPreProcessor = Preconditions.checkNotNull(preProcessor);
-  }
-
-  /**
-   * The implementation of {@link OptionsBase#asMap}.
-   */
-  static Map<String, Object> optionsAsMap(OptionsBase optionsInstance) {
-    Class<? extends OptionsBase> optionsClass = optionsInstance.getClass();
-    OptionsData data = OptionsParser.getOptionsDataInternal(optionsClass);
-    Map<String, Object> map = new HashMap<>();
-    for (Field field : data.getFieldsForClass(optionsClass)) {
-      try {
-        String name = field.getAnnotation(Option.class).name();
-        Object value = field.get(optionsInstance);
-        map.put(name, value);
-      } catch (IllegalAccessException e) {
-        throw new IllegalStateException(e); // unreachable
-      }
-    }
-    return map;
   }
 
   /**
@@ -639,18 +620,14 @@ class OptionsParserImpl {
       // Look for a "no"-prefixed option name: "no<optionName>".
       if (field == null && name.startsWith("no")) {
         // Give a nice error if someone is using the deprecated --no_ prefix.
-        // Note: With this check in place, is impossible to specify "--no_foo" for a flag named
-        // "--_foo", if a --foo flag also exists, since that'll be interpreted as the "no_"
-        // negating prefix for "--foo". Let that be a warning to anyone wanting to make flags that
-        // start with underscores.
         // TODO(Bazel-team): Remove the --no_ check when sufficient time has passed for users of
         // that feature to have stopped using it.
-        if (name.startsWith("no_") && optionsData.getFieldFromName(name.substring(3)) != null) {
-          throw new OptionsParsingException(
-              "'no_' prefixes are no longer accepted, --no<flag> is an accepted alternative.",
-              name.substring(3));
-        }
         name = name.substring(2);
+        if (name.startsWith("_") && optionsData.getFieldFromName(name.substring(1)) != null) {
+          name = name.substring(1);
+          warnings.add("Option '" + name + "' is specified using the deprecated --no_ prefix. "
+            + "Use --no without the underscore instead.");
+        }
         field = optionsData.getFieldFromName(name);
         booleanValue = false;
         if (field != null) {
@@ -674,7 +651,7 @@ class OptionsParserImpl {
     Option option = field == null ? null : field.getAnnotation(Option.class);
 
     if (option == null
-        || OptionsParser.documentationLevel(option) == OptionUsageRestrictions.INTERNAL) {
+        || option.optionUsageRestrictions() == OptionUsageRestrictions.INTERNAL) {
       // This also covers internal options, which are treated as if they did not exist.
       throw new OptionsParsingException("Unrecognized option: " + arg, arg);
     }
@@ -707,8 +684,8 @@ class OptionsParserImpl {
         return null;
       }
       optionsInstance = constructor.newInstance();
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("Error while instantiating options class", e);
     }
 
     // Set the fields
