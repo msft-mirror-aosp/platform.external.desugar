@@ -21,7 +21,16 @@ sourceSets {
             srcDirs 'java'
         }
     }
+    tryWithResources {
+        java {
+            srcDirs 'java'
+            include 'com/google/devtools/build/android/desugar/runtime/ThrowableExtension.java'
+        }
+    }
 }
+
+sourceCompatibility = JavaVersion.VERSION_1_7
+targetCompatibility = JavaVersion.VERSION_1_7
 
 // these have to match the dependencies found in Android.mk
 dependencies {
@@ -48,11 +57,20 @@ task('fatJarCreator', type: Jar) {
     }
 }
 
+task('runtimeTryWithResourcesCreator', type: Jar) {
+    from {
+        sourceSets.tryWithResources.output
+    }
+    archiveName 'libthrowable_extension.jar'
+}
+
 configurations {
     fatJar
+    runtimeTryWithResources
 }
 
 artifacts {
     fatJar fatJarCreator
+    runtimeTryWithResources runtimeTryWithResourcesCreator
 }
 
