@@ -522,15 +522,19 @@ class Desugar {
    * LambdaClassMaker generates lambda classes for us, but it does so by essentially simulating the
    * call to LambdaMetafactory that the JVM would make when encountering an invokedynamic.
    * LambdaMetafactory is in the JDK and its implementation has a property to write out ("dump")
-   * generated classes, which we take advantage of here. Set property before doing anything else
-   * since the property is read in the static initializer; if this breaks we can investigate setting
-   * the property when calling the tool.
+   * generated classes, which we take advantage of here. This property can be set externally, and in
+   * that case the specified directory is used as a temporary dir. Otherwise, it will be set here,
+   * before doing anything else since the property is read in the static initializer.
    */
   private static Path createAndRegisterLambdaDumpDirectory() throws IOException {
+    String propertyValue = System.getProperty(LambdaClassMaker.LAMBDA_METAFACTORY_DUMPER_PROPERTY);
+    if (propertyValue != null) {
+      return Paths.get(propertyValue);
+    }
+
     Path dumpDirectory = Files.createTempDirectory("lambdas");
     System.setProperty(
         LambdaClassMaker.LAMBDA_METAFACTORY_DUMPER_PROPERTY, dumpDirectory.toString());
-
     deleteTreeOnExit(dumpDirectory);
     return dumpDirectory;
   }
