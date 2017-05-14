@@ -42,9 +42,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import org.objectweb.asm.ClassReader;
@@ -171,6 +173,16 @@ class Desugar {
     public boolean desugarTryWithResourcesIfNeeded;
 
     @Option(
+      name = "desugar_try_with_resources_omit_runtime_classes",
+      defaultValue = "false",
+      category = "misc",
+      help =
+          "Omits the runtime classes necessary to support try-with-resources from the output. "
+              + "This property has effect only if --desugar_try_with_resources_if_needed is used."
+    )
+    public boolean desugarTryWithResourcesOmitRuntimeClasses;
+
+    @Option(
       name = "copy_bridges_from_classpath",
       defaultValue = "false",
       category = "misc",
@@ -193,6 +205,7 @@ class Desugar {
   private final CoreLibraryRewriter rewriter;
   private final LambdaClassMaker lambdas;
   private final GeneratedClassStore store;
+  private final Set<String> visitedExceptionTypes = new HashSet<>();
   /** The counter to record the times of try-with-resources desugaring is invoked. */
   private final AtomicInteger numOfTryWithResourcesInvoked = new AtomicInteger();
 
@@ -306,7 +319,9 @@ class Desugar {
   }
 
   private void copyThrowableExtensionClass(OutputFileProvider outputFileProvider) {
-    if (!outputJava7 || !options.desugarTryWithResourcesIfNeeded) {
+    if (!outputJava7
+        || !options.desugarTryWithResourcesIfNeeded
+        || options.desugarTryWithResourcesOmitRuntimeClasses) {
       // try-with-resources statements are okay in the output jar.
       return;
     }
@@ -441,10 +456,13 @@ class Desugar {
       // null ClassReaderFactory b/c we don't expect to need it for lambda classes
       visitor = new Java7Compatibility(visitor, (ClassReaderFactory) null);
       if (options.desugarTryWithResourcesIfNeeded) {
-        visitor = new TryWithResourcesRewriter(visitor, loader, numOfTryWithResourcesInvoked);
+        visitor =
+            new TryWithResourcesRewriter(
+                visitor, loader, visitedExceptionTypes, numOfTryWithResourcesInvoked);
       }
       if (options.desugarInterfaceMethodBodiesIfNeeded) {
-        visitor = new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader);
+        visitor =
+            new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader, loader);
         visitor = new InterfaceDesugaring(visitor, bootclasspathReader, store);
       }
     }
@@ -487,10 +505,13 @@ class Desugar {
       if (outputJava7) {
         visitor = new Java7Compatibility(visitor, classpathReader);
         if (options.desugarTryWithResourcesIfNeeded) {
-          visitor = new TryWithResourcesRewriter(visitor, loader, numOfTryWithResourcesInvoked);
+          visitor =
+              new TryWithResourcesRewriter(
+                  visitor, loader, visitedExceptionTypes, numOfTryWithResourcesInvoked);
         }
         if (options.desugarInterfaceMethodBodiesIfNeeded) {
-          visitor = new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader);
+          visitor =
+              new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader, loader);
           visitor = new InterfaceDesugaring(visitor, bootclasspathReader, store);
         }
       }
