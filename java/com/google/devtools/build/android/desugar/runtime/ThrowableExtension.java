@@ -50,7 +50,7 @@ public final class ThrowableExtension {
       if (apiLevel != null && apiLevel.intValue() >= 19) {
         strategy = new ReuseDesugaringStrategy();
       } else if (useMimicStrategy()) {
-        strategy = new MimicDesugaringStrategy();
+        strategy = new NullDesugaringStrategy();
       } else {
         strategy = new NullDesugaringStrategy();
       }
