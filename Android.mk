@@ -15,6 +15,8 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
 
 LOCAL_MODULE_CLASS := JAVA_LIBRARIES
 LOCAL_IS_HOST_MODULE := true
+# Required for use of javax.annotation.Generated per http://b/62050818
+LOCAL_JAVACFLAGS := $(if $(EXPERIMENTAL_USE_OPENJDK9),-J--add-modules=java.xml.ws.annotation,)
 
 # Use Dagger2 annotation processor
 # b/25860419: annotation processors must be explicitly specified for grok
