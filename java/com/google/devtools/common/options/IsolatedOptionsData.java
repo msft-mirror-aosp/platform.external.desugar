@@ -354,12 +354,56 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
       Map<String, String> booleanAliasMap,
       String optionName) {
     // Check that the negating alias does not conflict with existing flags.
-    checkForCollisions(nameToFieldMap, "no_" + optionName, "boolean option alias");
     checkForCollisions(nameToFieldMap, "no" + optionName, "boolean option alias");
 
     // Record that the boolean option takes up additional namespace for its negating alias.
-    booleanAliasMap.put("no_" + optionName, optionName);
     booleanAliasMap.put("no" + optionName, optionName);
+  }
+
+  private static void checkEffectTagRationality(String optionName, OptionEffectTag[] effectTags) {
+    // Check that there is at least one OptionEffectTag listed.
+    if (effectTags.length < 1) {
+      throw new ConstructionException(
+          "Option "
+              + optionName
+              + " does not list at least one OptionEffectTag. If the option has no effect, "
+              + "please add NO_OP, otherwise, add a tag representing its effect.");
+    } else if (effectTags.length > 1) {
+      // If there are more than 1 tag, make sure that NO_OP and UNKNOWN is not one of them.
+      // These don't make sense if other effects are listed.
+      ImmutableList<OptionEffectTag> tags = ImmutableList.copyOf(effectTags);
+      if (tags.contains(OptionEffectTag.UNKNOWN)) {
+        throw new ConstructionException(
+            "Option "
+                + optionName
+                + " includes UNKNOWN with other, known, effects. Please remove UNKNOWN from "
+                + "the list.");
+      }
+      if (tags.contains(OptionEffectTag.NO_OP)) {
+        throw new ConstructionException(
+            "Option "
+                + optionName
+                + " includes NO_OP with other effects. This doesn't make much sense. Please "
+                + "remove NO_OP or the actual effects from the list, whichever is correct.");
+      }
+    }
+  }
+
+  private static void checkMetadataTagAndCategoryRationality(
+      String optionName, OptionMetadataTag[] metadataTags, OptionDocumentationCategory category) {
+    for (OptionMetadataTag tag : metadataTags) {
+      if (tag == OptionMetadataTag.HIDDEN || tag == OptionMetadataTag.INTERNAL) {
+        if (category != OptionDocumentationCategory.UNDOCUMENTED) {
+          throw new ConstructionException(
+              "Option "
+                  + optionName
+                  + " has metadata tag "
+                  + tag
+                  + " but does not have category UNDOCUMENTED. "
+                  + "Please fix.");
+        }
+      }
+    }
   }
 
   /**
@@ -409,7 +453,18 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
                   + annotation.category() + "\" in option \"" + optionName + "\" is disallowed.");
         }
 
+        checkEffectTagRationality(optionName, annotation.effectTags());
+        checkMetadataTagAndCategoryRationality(
+            optionName, annotation.metadataTags(), annotation.documentationCategory());
+
         Type fieldType = getFieldSingularType(field, annotation);
+        // For simple, static expansions, don't accept non-Void types.
+        if (annotation.expansion().length != 0 && !isVoidField(field)) {
+          throw new ConstructionException(
+              "Option "
+                  + optionName
+                  + " is an expansion flag with a static expansion, but does not have Void type.");
+        }
 
         // Get the converter return type.
         @SuppressWarnings("rawtypes")
