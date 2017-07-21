@@ -20,6 +20,7 @@ import static com.google.common.base.Preconditions.checkState;
 import com.google.common.collect.ImmutableList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
 import java.util.TreeSet;
 import org.objectweb.asm.ClassReader;
@@ -27,6 +28,11 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.MethodNode;
 
 /**
  * Fixer of classes that extend interfaces with default methods to declare any missing methods
@@ -43,9 +49,14 @@ public class DefaultMethodClassFixer extends ClassVisitor {
   private String internalName;
   private ImmutableList<String> directInterfaces;
   private String superName;
+  /** This method node caches <clinit>, and flushes out in {@code visitEnd()}; */
+  private MethodNode clInitMethodNode;
 
-  public DefaultMethodClassFixer(ClassVisitor dest, ClassReaderFactory classpath,
-      ClassReaderFactory bootclasspath, ClassLoader targetLoader) {
+  public DefaultMethodClassFixer(
+      ClassVisitor dest,
+      ClassReaderFactory classpath,
+      ClassReaderFactory bootclasspath,
+      ClassLoader targetLoader) {
     super(Opcodes.ASM5, dest);
     this.classpath = classpath;
     this.bootclasspath = bootclasspath;
@@ -63,8 +74,10 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     checkState(this.directInterfaces == null);
     isInterface = BitFlags.isSet(access, Opcodes.ACC_INTERFACE);
     internalName = name;
-    checkArgument(superName != null || "java/lang/Object".equals(name), // ASM promises this
-        "Type without superclass: %s", name);
+    checkArgument(
+        superName != null || "java/lang/Object".equals(name), // ASM promises this
+        "Type without superclass: %s",
+        name);
     this.directInterfaces = ImmutableList.copyOf(interfaces);
     this.superName = superName;
     super.visit(version, access, name, signature, superName, interfaces);
@@ -76,9 +89,87 @@ public class DefaultMethodClassFixer extends ClassVisitor {
       // Inherited methods take precedence over default methods, so visit all superclasses and
       // figure out what methods they declare before stubbing in any missing default methods.
       recordInheritedMethods();
-      stubMissingDefaultMethods();
+      stubMissingDefaultAndBridgeMethods();
+      // Check whether there are interfaces with default methods and <clinit>. If yes, the following
+      // method call will return a list of interface fields to access in the <clinit> to trigger
+      // the initialization of these interfaces.
+      ImmutableList<String> companionsToTriggerInterfaceClinit =
+          collectOrderedCompanionsToTriggerInterfaceClinit(directInterfaces);
+      if (!companionsToTriggerInterfaceClinit.isEmpty()) {
+        if (clInitMethodNode == null) {
+          clInitMethodNode = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
+        }
+        desugarClinitToTriggerInterfaceInitializers(companionsToTriggerInterfaceClinit);
+      }
+    }
+    if (clInitMethodNode != null && super.cv != null) { // Write <clinit> to the chained visitor.
+      clInitMethodNode.accept(super.cv);
     }
     super.visitEnd();
+  }
+
+  private boolean isClinitAlreadyDesugared(
+      ImmutableList<String> companionsToAccessToTriggerInterfaceClinit) {
+    InsnList instructions = clInitMethodNode.instructions;
+    if (instructions.size() <= companionsToAccessToTriggerInterfaceClinit.size()) {
+      // The <clinit> must end with RETURN, so if the instruction count is less than or equal to
+      // the companion class count, this <clinit> has not been desugared.
+      return false;
+    }
+    Iterator<AbstractInsnNode> iterator = instructions.iterator();
+    for (String companion : companionsToAccessToTriggerInterfaceClinit) {
+      if (!iterator.hasNext()) {
+        return false;
+      }
+      AbstractInsnNode first = iterator.next();
+      if (!(first instanceof MethodInsnNode)) {
+        return false;
+      }
+      MethodInsnNode methodInsnNode = (MethodInsnNode) first;
+      if (methodInsnNode.getOpcode() != Opcodes.INVOKESTATIC
+          || !methodInsnNode.owner.equals(companion)
+          || !methodInsnNode.name.equals(
+              InterfaceDesugaring.COMPANION_METHOD_TO_TRIGGER_INTERFACE_CLINIT_NAME)) {
+        return false;
+      }
+      checkState(
+          methodInsnNode.desc.equals(
+              InterfaceDesugaring.COMPANION_METHOD_TO_TRIGGER_INTERFACE_CLINIT_DESC),
+          "Inconsistent method desc: %s vs %s",
+          methodInsnNode.desc,
+          InterfaceDesugaring.COMPANION_METHOD_TO_TRIGGER_INTERFACE_CLINIT_DESC);
+
+      if (!iterator.hasNext()) {
+        return false;
+      }
+      AbstractInsnNode second = iterator.next();
+      if (second.getOpcode() != Opcodes.POP) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private void desugarClinitToTriggerInterfaceInitializers(
+      ImmutableList<String> companionsToTriggerInterfaceClinit) {
+    if (isClinitAlreadyDesugared(companionsToTriggerInterfaceClinit)) {
+      return;
+    }
+    InsnList desugarInsts = new InsnList();
+    for (String companionClass : companionsToTriggerInterfaceClinit) {
+      desugarInsts.add(
+          new MethodInsnNode(
+              Opcodes.INVOKESTATIC,
+              companionClass,
+              InterfaceDesugaring.COMPANION_METHOD_TO_TRIGGER_INTERFACE_CLINIT_NAME,
+              InterfaceDesugaring.COMPANION_METHOD_TO_TRIGGER_INTERFACE_CLINIT_DESC,
+              false));
+    }
+    if (clInitMethodNode.instructions.size() == 0) {
+      clInitMethodNode.instructions.insert(new InsnNode(Opcodes.RETURN));
+    }
+    clInitMethodNode.instructions.insertBefore(
+        clInitMethodNode.instructions.getFirst(), desugarInsts);
   }
 
   @Override
@@ -88,10 +179,15 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     if (!isInterface) {
       recordIfInstanceMethod(access, name, desc);
     }
+    if ("<clinit>".equals(name)) {
+      checkState(clInitMethodNode == null, "This class fixer has been used. ");
+      clInitMethodNode = new MethodNode(access, name, desc, signature, exceptions);
+      return clInitMethodNode;
+    }
     return super.visitMethod(access, name, desc, signature, exceptions);
   }
 
-  private void stubMissingDefaultMethods() {
+  private void stubMissingDefaultAndBridgeMethods() {
     TreeSet<Class<?>> allInterfaces = new TreeSet<>(InterfaceComparator.INSTANCE);
     for (String direct : directInterfaces) {
       // Loading ensures all transitively implemented interfaces can be loaded, which is necessary
@@ -113,7 +209,7 @@ public class DefaultMethodClassFixer extends ClassVisitor {
         // shouldn't stub default methods for this interface.
         continue;
       }
-      stubMissingDefaultMethods(interfaceToVisit.getName().replace('.', '/'));
+      stubMissingDefaultAndBridgeMethods(interfaceToVisit.getName().replace('.', '/'));
     }
   }
 
@@ -142,8 +238,9 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     while (internalName != null) {
       ClassReader bytecode = bootclasspath.readIfKnown(internalName);
       if (bytecode == null) {
-        bytecode = checkNotNull(classpath.readIfKnown(internalName),
-            "Superclass not found: %s", internalName);
+        bytecode =
+            checkNotNull(
+                classpath.readIfKnown(internalName), "Superclass not found: %s", internalName);
       }
       bytecode.accept(recorder, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG);
       internalName = bytecode.getSuperName();
@@ -159,8 +256,57 @@ public class DefaultMethodClassFixer extends ClassVisitor {
   }
 
   /**
+   * Starting from the given interfaces, this method scans the interface hierarchy, finds the
+   * interfaces that have default methods and <clinit>, and returns the companion class names of
+   * these interfaces.
+   *
+   * <p>Note that the returned companion classes are ordered in the order of the interface
+   * initialization, which is consistent with the JVM behavior. For example, "class A implements I1,
+   * I2", the returned list would be [I1$$CC, I2$$CC], not [I2$$CC, I1$$CC].
+   */
+  private ImmutableList<String> collectOrderedCompanionsToTriggerInterfaceClinit(
+      ImmutableList<String> interfaces) {
+    ImmutableList.Builder<String> companionCollector = ImmutableList.builder();
+    HashSet<String> visitedInterfaces = new HashSet<>();
+    for (String anInterface : interfaces) {
+      collectOrderedCompanionsToTriggerInterfaceClinit(
+          anInterface, visitedInterfaces, companionCollector);
+    }
+    return companionCollector.build();
+  }
+
+  private void collectOrderedCompanionsToTriggerInterfaceClinit(
+      String anInterface,
+      HashSet<String> visitedInterfaces,
+      ImmutableList.Builder<String> companionCollector) {
+    if (!visitedInterfaces.add(anInterface)) {
+      return;
+    }
+    ClassReader bytecode = classpath.readIfKnown(anInterface);
+    if (bytecode == null || bootclasspath.isKnown(anInterface)) {
+      return;
+    }
+    String[] parentInterfaces = bytecode.getInterfaces();
+    if (parentInterfaces != null && parentInterfaces.length > 0) {
+      for (String parentInterface : parentInterfaces) {
+        collectOrderedCompanionsToTriggerInterfaceClinit(
+            parentInterface, visitedInterfaces, companionCollector);
+      }
+    }
+    InterfaceInitializationNecessityDetector necessityDetector =
+        new InterfaceInitializationNecessityDetector(bytecode.getClassName());
+    bytecode.accept(necessityDetector, ClassReader.SKIP_DEBUG);
+    if (necessityDetector.needsToInitialize()) {
+      // If we need to initialize this interface, we initialize its companion class, and its
+      // companion class will initialize the interface then. This desigin decision is made to avoid
+      // access issue, e.g., package-private interfaces.
+      companionCollector.add(InterfaceDesugaring.getCompanionClassName(anInterface));
+    }
+  }
+
+  /**
    * Recursively searches the given interfaces for default methods not implemented by this class
-   * directly.  If this method returns true we need to think about stubbing missing default methods.
+   * directly. If this method returns true we need to think about stubbing missing default methods.
    */
   private boolean defaultMethodsDefined(ImmutableList<String> interfaces) {
     for (String implemented : interfaces) {
@@ -183,33 +329,51 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     return false;
   }
 
-  /**
-   * Returns {@code true} for non-bridge default methods not in {@link #instanceMethods}.
-   */
-  private boolean shouldStub(int access, String name, String desc) {
+  /** Returns {@code true} for non-bridge default methods not in {@link #instanceMethods}. */
+  private boolean shouldStubAsDefaultMethod(int access, String name, String desc) {
     // Ignore private methods, which technically aren't default methods and can only be called from
     // other methods defined in the interface.  This also ignores lambda body methods, which is fine
     // as we don't want or need to stub those.  Also ignore bridge methods as javac adds them to
     // concrete classes as needed anyway and we handle them separately for generated lambda classes.
-    return BitFlags.noneSet(access,
-            Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_BRIDGE | Opcodes.ACC_PRIVATE)
+    // Note that an exception is that, if a bridge method is for a default interface method, javac
+    // will NOT generate the bridge method in the implementing class. So we need extra logic to
+    // handle these bridge methods.
+    return isNonBridgeDefaultMethod(access) && !instanceMethods.contains(name + ":" + desc);
+  }
+
+  private static boolean isNonBridgeDefaultMethod(int access) {
+    return BitFlags.noneSet(
+        access,
+        Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_BRIDGE | Opcodes.ACC_PRIVATE);
+  }
+
+  /**
+   * Check whether an interface method is a bridge method for a default interface method. This type
+   * of bridge methods is special, as they are not put in the implementing classes by javac.
+   */
+  private boolean shouldStubAsBridgeDefaultMethod(int access, String name, String desc) {
+    return BitFlags.isSet(access, Opcodes.ACC_BRIDGE | Opcodes.ACC_PUBLIC)
+        && BitFlags.noneSet(access, Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC)
         && !instanceMethods.contains(name + ":" + desc);
   }
 
-  private void stubMissingDefaultMethods(String implemented) {
+  private void stubMissingDefaultAndBridgeMethods(String implemented) {
     if (bootclasspath.isKnown(implemented)) {
       // Default methods on the bootclasspath will be available at runtime, so just ignore them.
       return;
     }
-    ClassReader bytecode = checkNotNull(classpath.readIfKnown(implemented),
-        "Couldn't find interface %s implemented by %s", implemented, internalName);
-    // We can skip code attributes as we just need to find default methods to stub.
-    bytecode.accept(new DefaultMethodStubber(), ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG);
+    ClassReader bytecode =
+        checkNotNull(
+            classpath.readIfKnown(implemented),
+            "Couldn't find interface %s implemented by %s",
+            implemented,
+            internalName);
+    bytecode.accept(new DefaultMethodStubber(), ClassReader.SKIP_DEBUG);
   }
 
   /**
-   * Visitor for interfaces that produces delegates in the class visited by the outer
-   * {@link DefaultMethodClassFixer} for every default method encountered.
+   * Visitor for interfaces that produces delegates in the class visited by the outer {@link
+   * DefaultMethodClassFixer} for every default method encountered.
    */
   private class DefaultMethodStubber extends ClassVisitor {
 
@@ -235,7 +399,7 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     @Override
     public MethodVisitor visitMethod(
         int access, String name, String desc, String signature, String[] exceptions) {
-      if (shouldStub(access, name, desc)) {
+      if (shouldStubAsDefaultMethod(access, name, desc)) {
         // Remember we stubbed this method in case it's also defined by subsequently visited
         // interfaces.  javac would force the method to be defined explicitly if there any two
         // definitions conflict, but see stubMissingDefaultMethods() for how we deal with default
@@ -267,8 +431,19 @@ public class DefaultMethodClassFixer extends ClassVisitor {
 
         stubMethod.visitMaxs(0, 0); // rely on class writer to compute these
         stubMethod.visitEnd();
+        return null;
+      } else if (shouldStubAsBridgeDefaultMethod(access, name, desc)) {
+        recordIfInstanceMethod(access, name, desc);
+        // For bridges we just copy their bodies instead of going through the companion class.
+        // Meanwhile, we also need to desugar the copied method bodies, so that any calls to
+        // interface methods are correctly handled.
+        return new InterfaceDesugaring.InterfaceInvocationRewriter(
+            DefaultMethodClassFixer.this.visitMethod(access, name, desc, (String) null, exceptions),
+            interfaceName,
+            bootclasspath);
+      } else {
+        return null; // we don't care about the actual code in these methods
       }
-      return null; // we don't care about the actual code in these methods
     }
   }
 
@@ -276,8 +451,9 @@ public class DefaultMethodClassFixer extends ClassVisitor {
    * Visitor for interfaces that recursively searches interfaces for default method declarations.
    */
   private class DefaultMethodFinder extends ClassVisitor {
+    @SuppressWarnings("hiding")
+    private ImmutableList<String> interfaces;
 
-    @SuppressWarnings("hiding") private ImmutableList<String> interfaces;
     private boolean found;
 
     public DefaultMethodFinder() {
@@ -311,7 +487,7 @@ public class DefaultMethodClassFixer extends ClassVisitor {
     @Override
     public MethodVisitor visitMethod(
         int access, String name, String desc, String signature, String[] exceptions) {
-      if (!found && shouldStub(access, name, desc)) {
+      if (!found && shouldStubAsDefaultMethod(access, name, desc)) {
         // Found a default method we're not ignoring (instanceMethods at this point contains methods
         // the top-level visited class implements itself).
         found = true;
@@ -343,6 +519,66 @@ public class DefaultMethodClassFixer extends ClassVisitor {
         int access, String name, String desc, String signature, String[] exceptions) {
       recordIfInstanceMethod(access, name, desc);
       return null;
+    }
+  }
+
+  /**
+   * Detector to determine whether an interface needs to be initialized when it is loaded.
+   *
+   * <p>If the interface has a default method, and its <clinit> initializes any of its fields, then
+   * this interface needs to be initialized.
+   */
+  private static class InterfaceInitializationNecessityDetector extends ClassVisitor {
+
+    private final String internalName;
+    private boolean hasFieldInitializedInClinit;
+    private boolean hasDefaultMethods;
+
+    public InterfaceInitializationNecessityDetector(String internalName) {
+      super(Opcodes.ASM5);
+      this.internalName = internalName;
+    }
+
+    public boolean needsToInitialize() {
+      return hasDefaultMethods && hasFieldInitializedInClinit;
+    }
+
+    @Override
+    public void visit(
+        int version,
+        int access,
+        String name,
+        String signature,
+        String superName,
+        String[] interfaces) {
+      super.visit(version, access, name, signature, superName, interfaces);
+      checkState(
+          internalName.equals(name),
+          "Inconsistent internal names: expected=%s, real=%s",
+          internalName,
+          name);
+      checkArgument(
+          BitFlags.isSet(access, Opcodes.ACC_INTERFACE),
+          "This class visitor is only used for interfaces.");
+    }
+
+    @Override
+    public MethodVisitor visitMethod(
+        int access, String name, String desc, String signature, String[] exceptions) {
+      if (!hasDefaultMethods) {
+        hasDefaultMethods = isNonBridgeDefaultMethod(access);
+      }
+      if ("<clinit>".equals(name)) {
+        return new MethodVisitor(Opcodes.ASM5) {
+          @Override
+          public void visitFieldInsn(int opcode, String owner, String name, String desc) {
+            if (opcode == Opcodes.PUTSTATIC && internalName.equals(owner)) {
+              hasFieldInitializedInClinit = true;
+            }
+          }
+        };
+      }
+      return null; // Do not care about the code.
     }
   }
 
