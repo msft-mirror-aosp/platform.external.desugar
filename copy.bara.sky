@@ -19,7 +19,7 @@ core.workflow(
         ],
     ),
     destination = git.gerrit_destination(
-        url = "rpc://android-review.googlesource.com/platform/external/desugar",
+        url = "sso://android/platform/external/desugar",
         fetch = "upstream-master",
         push_to_refs_for = "upstream-master",
     ),
