@@ -239,7 +239,7 @@ public class OptionsParser implements OptionsProvider {
     private final Converter<?> converter;
     private final boolean allowMultiple;
 
-    private final OptionsData.ExpansionData expansionData;
+    private final ImmutableList<OptionValueDescription> expansions;
     private final ImmutableList<OptionValueDescription> implicitRequirements;
 
     OptionDescription(
@@ -247,13 +247,13 @@ public class OptionsParser implements OptionsProvider {
         Object defaultValue,
         Converter<?> converter,
         boolean allowMultiple,
-        OptionsData.ExpansionData expansionData,
+        ImmutableList<OptionValueDescription> expansions,
         ImmutableList<OptionValueDescription> implicitRequirements) {
       this.name = name;
       this.defaultValue = defaultValue;
       this.converter = converter;
       this.allowMultiple = allowMultiple;
-      this.expansionData = expansionData;
+      this.expansions = expansions;
       this.implicitRequirements = implicitRequirements;
     }
 
@@ -277,14 +277,8 @@ public class OptionsParser implements OptionsProvider {
       return implicitRequirements;
     }
 
-    public boolean isExpansion() {
-      return !expansionData.isEmpty();
-    }
-
-    /** Return a list of flags that this option expands to. */
-    public ImmutableList<String> getExpansion(ExpansionContext context)
-        throws OptionsParsingException {
-      return expansionData.getExpansion(context);
+    public ImmutableList<OptionValueDescription> getExpansions() {
+      return expansions;
     }
   }
 
@@ -453,21 +447,17 @@ public class OptionsParser implements OptionsProvider {
       return field.getType().equals(boolean.class);
     }
 
-    private OptionDocumentationCategory documentationCategory() {
-      return field.getAnnotation(Option.class).documentationCategory();
-    }
-
-    private ImmutableList<OptionMetadataTag> metadataTags() {
-      return ImmutableList.copyOf(field.getAnnotation(Option.class).metadataTags());
+    private OptionUsageRestrictions optionUsageRestrictions() {
+      return field.getAnnotation(Option.class).optionUsageRestrictions();
     }
 
     public boolean isDocumented() {
-      return documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED && !isHidden();
+      return optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED;
     }
 
     public boolean isHidden() {
-      ImmutableList<OptionMetadataTag> tags = metadataTags();
-      return tags.contains(OptionMetadataTag.HIDDEN) || tags.contains(OptionMetadataTag.INTERNAL);
+      return optionUsageRestrictions() == OptionUsageRestrictions.HIDDEN
+          || optionUsageRestrictions() == OptionUsageRestrictions.INTERNAL;
     }
 
     boolean isExpansion() {
@@ -521,6 +511,22 @@ public class OptionsParser implements OptionsProvider {
   public enum HelpVerbosity { LONG, MEDIUM, SHORT }
 
   /**
+   * The restrictions on an option. Only documented options are output as part of the help and are
+   * intended for general user use. Undocumented options can be used by any user but aren't
+   * advertised and in practice should be used by bazel developers or early adopters helping to test
+   * a feature.
+   *
+   * <p>We use HIDDEN so that options that form the protocol between the client and the server are
+   * not logged. These are flags, but should never be set by a user.
+   *
+   * <p>Options which are INTERNAL are not recognized by the parser at all, and so cannot be used as
+   * flags.
+   */
+  public enum OptionUsageRestrictions {
+    DOCUMENTED, UNDOCUMENTED, HIDDEN, INTERNAL
+  }
+
+  /**
    * Returns a description of all the options this parser can digest. In addition to {@link Option}
    * annotations, this method also interprets {@link OptionsUsage} annotations which give an
    * intuitive short description for the options. Options of the same category (see {@link
@@ -548,7 +554,7 @@ public class OptionsParser implements OptionsProvider {
         Option option = optionField.getAnnotation(Option.class);
         String category = option.category();
         if (!category.equals(prevCategory)
-            && option.documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED) {
+            && option.optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED) {
           String description = categoryDescriptions.get(category);
           if (description == null) {
             description = "Options category '" + category + "'";
@@ -557,7 +563,7 @@ public class OptionsParser implements OptionsProvider {
           prevCategory = category;
         }
 
-        if (option.documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED) {
+        if (option.optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED) {
           OptionsUsage.getUsage(optionField, desc, helpVerbosity, impl.getOptionsData());
         }
       }
@@ -591,7 +597,7 @@ public class OptionsParser implements OptionsProvider {
         Option option = optionField.getAnnotation(Option.class);
         String category = option.category();
         if (!category.equals(prevCategory)
-            && option.documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED) {
+            && option.optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED) {
           String description = categoryDescriptions.get(category);
           if (description == null) {
             description = "Options category '" + category + "'";
@@ -604,7 +610,7 @@ public class OptionsParser implements OptionsProvider {
           prevCategory = category;
         }
 
-        if (option.documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED) {
+        if (option.optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED) {
           OptionsUsage.getUsageHtml(optionField, desc, escaper, impl.getOptionsData());
         }
       }
@@ -638,7 +644,7 @@ public class OptionsParser implements OptionsProvider {
     });
     for (Field optionField : allFields) {
       Option option = optionField.getAnnotation(Option.class);
-      if (option.documentationCategory() != OptionDocumentationCategory.UNDOCUMENTED) {
+      if (option.optionUsageRestrictions() == OptionUsageRestrictions.DOCUMENTED) {
         OptionsUsage.getCompletion(optionField, desc);
       }
     }
@@ -652,33 +658,21 @@ public class OptionsParser implements OptionsProvider {
    * @return The {@link OptionDescription} for the option, or null if there is no option by the
    *     given name.
    */
-  OptionDescription getOptionDescription(String name) throws OptionsParsingException {
+  public OptionDescription getOptionDescription(String name) throws OptionsParsingException {
     return impl.getOptionDescription(name);
   }
 
   /**
-   * Returns a description of the options values that get expanded from this flag with the given
-   * flag value.
-   *
-   * @return The {@link ImmutableList<OptionValueDescription>} for the option, or null if there is
-   *     no option by the given name.
-   */
-  ImmutableList<OptionValueDescription> getExpansionOptionValueDescriptions(
-      String flagName, @Nullable String flagValue) throws OptionsParsingException {
-    return impl.getExpansionOptionValueDescriptions(flagName, flagValue);
-  }
-
-  /**
-   * Returns a description of the option value set by the last previous call to {@link
-   * #parse(OptionPriority, String, List)} that successfully set the given option. If the option is
-   * of type {@link List}, the description will correspond to any one of the calls, but not
-   * necessarily the last.
+   * Returns a description of the option value set by the last previous call to
+   * {@link #parse(OptionPriority, String, List)} that successfully set the given
+   * option. If the option is of type {@link List}, the description will
+   * correspond to any one of the calls, but not necessarily the last.
    *
    * @return The {@link OptionValueDescription} for the option, or null if the value has not been
-   *     set.
+   *        set.
    * @throws IllegalArgumentException if there is no option by the given name.
    */
-  OptionValueDescription getOptionValueDescription(String name) {
+  public OptionValueDescription getOptionValueDescription(String name) {
     return impl.getOptionValueDescription(name);
   }
 
@@ -799,7 +793,7 @@ public class OptionsParser implements OptionsProvider {
 
   /**
    * Returns whether the given options class uses only the core types listed in {@link
-   * UsesOnlyCoreTypes#CORE_TYPES}. These are guaranteed to be deeply immutable and serializable.
+   * OptionsBase#coreTypes}. These are guaranteed to be deeply immutable and serializable.
    */
   public static boolean getUsesOnlyCoreTypes(Class<? extends OptionsBase> optionsClass) {
     OptionsData data = OptionsParser.getOptionsDataInternal(optionsClass);
