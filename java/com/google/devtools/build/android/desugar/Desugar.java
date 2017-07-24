@@ -512,7 +512,7 @@ class Desugar {
     // instructions in generated lambda classes (checkState below will fail)
     visitor =
         new LambdaDesugaring(
-            visitor, loader, lambdas, null, ImmutableSet.of(), allowDefaultMethods);
+            visitor, loader, lambdas, null, ImmutableSet.<MethodInfo>of(), allowDefaultMethods);
     if (!allowCallsToObjectsNonNull) {
       // Not sure whether there will be implicit null check emitted by javac, so we rerun
       // the inliner again

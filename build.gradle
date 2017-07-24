@@ -19,7 +19,10 @@ sourceSets {
     main {
         java {
             srcDirs 'java'
-        }
+	    exclude 'com/google/devtools/common/options/testing/**'
+	    exclude 'com/google/devtools/common/options/InvocationPolicyEnforcer.java'
+	    exclude 'com/google/devtools/common/options/InvocationPolicyParser.java'
+	}
     }
     tryWithResources {
         java {
