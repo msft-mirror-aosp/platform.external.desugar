@@ -2,9 +2,16 @@ licenses(["notice"])  # Apache License 2.0
 
 java_binary(
     name = "desugar",
-    srcs = glob([
-        "java/**/*.java",
-    ]),
+    srcs = glob(
+        [
+            "java/**/*.java",
+        ],
+        exclude = [
+            "java/com/google/devtools/common/options/testing/**/*.java",
+            "java/com/google/devtools/common/options/InvocationPolicyEnforcer.java",
+            "java/com/google/devtools/common/options/InvocationPolicyParser.java",
+        ],
+    ),
     javacopts = [
         "-source 7",
         "-target 7",
