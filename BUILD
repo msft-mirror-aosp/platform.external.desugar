@@ -12,10 +12,6 @@ java_binary(
             "java/com/google/devtools/common/options/InvocationPolicyParser.java",
         ],
     ),
-    javacopts = [
-        "-source 7",
-        "-target 7",
-    ],
     main_class = "com.google.devtools.build.android.desugar.Desugar",
     plugins = ["auto-value-plugin"],
     visibility = ["//tools/base/build-system/builder:__subpackages__"],

@@ -32,9 +32,6 @@ sourceSets {
     }
 }
 
-sourceCompatibility = JavaVersion.VERSION_1_7
-targetCompatibility = JavaVersion.VERSION_1_7
-
 // these have to match the dependencies found in Android.mk
 dependencies {
     compileOnly 'com.google.code.findbugs:jsr305:3.0.1'
