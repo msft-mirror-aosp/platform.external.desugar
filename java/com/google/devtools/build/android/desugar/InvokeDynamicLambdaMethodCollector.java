@@ -31,7 +31,7 @@ public class InvokeDynamicLambdaMethodCollector extends ClassVisitor {
       ImmutableSet.builder();
 
   public InvokeDynamicLambdaMethodCollector() {
-    super(Opcodes.ASM5);
+    super(Opcodes.ASM6);
   }
 
   @Override
@@ -44,7 +44,7 @@ public class InvokeDynamicLambdaMethodCollector extends ClassVisitor {
   private class LambdaMethodCollector extends MethodVisitor {
 
     public LambdaMethodCollector(MethodVisitor dest) {
-      super(Opcodes.ASM5, dest);
+      super(Opcodes.ASM6, dest);
     }
 
     @Override
