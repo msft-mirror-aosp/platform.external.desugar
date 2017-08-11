@@ -4,12 +4,7 @@ java_binary(
     name = "desugar",
     srcs = glob(
         [
-            "java/**/*.java",
-        ],
-        exclude = [
-            "java/com/google/devtools/common/options/testing/**/*.java",
-            "java/com/google/devtools/common/options/InvocationPolicyEnforcer.java",
-            "java/com/google/devtools/common/options/InvocationPolicyParser.java",
+            "java/com/google/devtools/build/android/**",
         ],
     ),
     javacopts = [
@@ -25,6 +20,7 @@ java_binary(
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm-commons/5.2:jar",
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm-tree/5.2:jar",
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm/5.2:jar",
+        "//tools/external/desugar/java/com/google/devtools/common/options",
     ],
 )
 
