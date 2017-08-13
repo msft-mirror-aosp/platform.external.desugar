@@ -132,7 +132,7 @@ class CoreLibraryRewriter {
     private final ClassWriter writer;
 
     UnprefixingClassWriter(int flags) {
-      super(Opcodes.ASM5);
+      super(Opcodes.ASM6);
       this.writer = new ClassWriter(flags);
       this.cv = this.writer;
       if (prefix.length() != 0) {

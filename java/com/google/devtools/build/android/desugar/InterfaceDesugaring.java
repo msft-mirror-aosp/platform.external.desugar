@@ -55,7 +55,7 @@ class InterfaceDesugaring extends ClassVisitor {
 
   public InterfaceDesugaring(
       ClassVisitor dest, ClassReaderFactory bootclasspath, GeneratedClassStore store) {
-    super(Opcodes.ASM5, dest);
+    super(Opcodes.ASM6, dest);
     this.bootclasspath = bootclasspath;
     this.store = store;
   }
@@ -250,7 +250,7 @@ class InterfaceDesugaring extends ClassVisitor {
   private class InterfaceFieldWriteCollector extends MethodVisitor {
 
     public InterfaceFieldWriteCollector(MethodVisitor mv) {
-      super(Opcodes.ASM5, mv);
+      super(Opcodes.ASM6, mv);
     }
 
     @Override
@@ -282,7 +282,7 @@ class InterfaceDesugaring extends ClassVisitor {
 
     public InterfaceInvocationRewriter(
         MethodVisitor dest, String internalName, ClassReaderFactory bootclasspath) {
-      super(Opcodes.ASM5, dest);
+      super(Opcodes.ASM6, dest);
       this.internalName = internalName;
       this.bootclasspath = bootclasspath;
     }
@@ -351,7 +351,7 @@ class InterfaceDesugaring extends ClassVisitor {
     private final MethodVisitor annotationOnlyDest;
 
     public MultiplexAnnotations(@Nullable MethodVisitor dest, MethodVisitor annotationOnlyDest) {
-      super(Opcodes.ASM5, dest);
+      super(Opcodes.ASM6, dest);
       this.annotationOnlyDest = annotationOnlyDest;
     }
 
@@ -396,7 +396,7 @@ class InterfaceDesugaring extends ClassVisitor {
 
     public MultiplexAnnotationVisitor(
         @Nullable AnnotationVisitor dest, AnnotationVisitor... moreDestinations) {
-      super(Opcodes.ASM5, dest);
+      super(Opcodes.ASM6, dest);
       this.moreDestinations = moreDestinations;
     }
 
