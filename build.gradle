@@ -44,6 +44,16 @@ dependencies {
     compile 'org.ow2.asm:asm-commons:5.2'
 }
 
+// setup annotation processor output directory
+File generatedSources = new File(project.buildDir, 'generated/generated')
+tasks.compileJava {
+    doFirst {
+        generatedSources.mkdirs()
+    }
+    options.compilerArgs += ['-s', generatedSources]
+    outputs.dir(generatedSources)
+}
+
 task('fatJarCreator', type: Jar) {
     from {
         configurations.compile.collect { it.isDirectory() ? it : zipTree(it) }
