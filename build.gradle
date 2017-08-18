@@ -39,9 +39,9 @@ dependencies {
 
     compile project(':external:desugar:optionsLib')
     compile 'com.google.guava:guava:20.0'
-    compile 'org.ow2.asm:asm:5.2'
-    compile 'org.ow2.asm:asm-tree:5.2'
-    compile 'org.ow2.asm:asm-commons:5.2'
+    compile 'org.ow2.asm:asm:6.0_BETA'
+    compile 'org.ow2.asm:asm-tree:6.0_BETA'
+    compile 'org.ow2.asm:asm-commons:6.0_BETA'
 }
 
 // setup annotation processor output directory
