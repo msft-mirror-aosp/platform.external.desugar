@@ -19,9 +19,9 @@ LOCAL_SRC_FILES := $(desugar_src_files)
 
 LOCAL_JAR_MANIFEST := manifest.txt
 LOCAL_STATIC_JAVA_LIBRARIES := \
-    asm-5.2 \
-    asm-commons-5.2 \
-    asm-tree-5.2 \
+    asm-6.0_BETA \
+    asm-commons-6.0_BETA \
+    asm-tree-6.0_BETA \
     error_prone_annotations-2.0.18 \
     guava-20.0 \
     jsr305-3.0.1 \

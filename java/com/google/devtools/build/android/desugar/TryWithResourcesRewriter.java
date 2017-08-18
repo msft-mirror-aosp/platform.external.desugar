@@ -14,7 +14,7 @@
 package com.google.devtools.build.android.desugar;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.objectweb.asm.Opcodes.ASM5;
+import static org.objectweb.asm.Opcodes.ASM6;
 import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 
@@ -103,7 +103,7 @@ public class TryWithResourcesRewriter extends ClassVisitor {
       ClassLoader classLoader,
       Set<String> visitedExceptionTypes,
       AtomicInteger numOfTryWithResourcesInvoked) {
-    super(ASM5, classVisitor);
+    super(ASM6, classVisitor);
     this.classLoader = classLoader;
     this.visitedExceptionTypes = visitedExceptionTypes;
     this.numOfTryWithResourcesInvoked = numOfTryWithResourcesInvoked;
@@ -143,7 +143,7 @@ public class TryWithResourcesRewriter extends ClassVisitor {
 
     public TryWithResourceVisitor(
         String methodSignature, MethodVisitor methodVisitor, ClassLoader classLoader) {
-      super(ASM5, methodVisitor);
+      super(ASM6, methodVisitor);
       this.classLoader = classLoader;
       this.methodSignature = methodSignature;
     }
