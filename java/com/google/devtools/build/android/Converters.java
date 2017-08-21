@@ -24,15 +24,18 @@ import java.nio.file.Path;
  * Some convenient converters used by android actions. Note: These are specific to android actions.
  */
 public final class Converters {
-  private static final Converter<String> IDENTITY_CONVERTER = new Converter<String>() {
-    @Override public String convert(String input) {
-      return input;
-    }
+  private static final Converter<String> IDENTITY_CONVERTER =
+      new Converter<String>() {
+        @Override
+        public String convert(String input) {
+          return input;
+        }
 
-    @Override public String getTypeDescription() {
-      return "a string";
-    }
-  };
+        @Override
+        public String getTypeDescription() {
+          return "a string";
+        }
+      };
 
   /** Validating converter for Paths. A Path is considered valid if it resolves to a file. */
   public static class PathConverter implements Converter<Path> {
