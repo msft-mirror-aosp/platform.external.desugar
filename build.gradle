@@ -19,7 +19,8 @@ sourceSets {
     main {
         java {
             srcDirs 'java/com/google/devtools/build/android'
-	}
+            exclude 'desugar/runtime/**'
+        }
     }
     tryWithResources {
         java {
