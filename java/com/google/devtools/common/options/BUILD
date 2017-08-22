@@ -14,7 +14,16 @@ java_library(
     ),
     visibility = ["//tools/external/desugar:__subpackages__"],
     deps = [
-        "//prebuilts/tools/common/m2/repository/com/google/code/findbugs/jsr305/3.0.1:jar",
+        ":deps-neverlink",
         "//prebuilts/tools/common/m2/repository/com/google/guava/guava/20.0:jar",
+    ],
+)
+
+java_library(
+    name = "deps-neverlink",
+    neverlink = 1,
+    visibility = ["//visibility:private"],
+    exports = [
+        "//prebuilts/tools/common/m2/repository/com/google/code/findbugs/jsr305/3.0.1:jar",
     ],
 )
