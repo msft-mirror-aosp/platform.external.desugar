@@ -23,7 +23,7 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
     asm-commons-6.0_BETA \
     asm-tree-6.0_BETA \
     error_prone_annotations-2.0.18 \
-    guava-20.0 \
+    guava-21.0 \
     jsr305-3.0.1 \
     dagger2-auto-value-host \
 
