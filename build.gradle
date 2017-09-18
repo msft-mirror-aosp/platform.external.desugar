@@ -39,7 +39,7 @@ dependencies {
     compileOnly 'com.google.errorprone:error_prone_annotations:2.0.18'
 
     compile project(':external:desugar:optionsLib')
-    compile 'com.google.guava:guava:20.0'
+    compile 'com.google.guava:guava:21.0'
     compile 'org.ow2.asm:asm:6.0_BETA'
     compile 'org.ow2.asm:asm-tree:6.0_BETA'
     compile 'org.ow2.asm:asm-commons:6.0_BETA'

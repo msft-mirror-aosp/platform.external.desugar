@@ -16,7 +16,7 @@ java_binary(
     visibility = ["//tools/base/build-system/builder:__subpackages__"],
     deps = [
         ":deps-neverlink",
-        "//prebuilts/tools/common/m2/repository/com/google/guava/guava/20.0:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/guava/guava/21.0:jar",
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm-commons/6.0_BETA:jar",
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm-tree/6.0_BETA:jar",
         "//prebuilts/tools/common/m2/repository/org/ow2/asm/asm/6.0_BETA:jar",

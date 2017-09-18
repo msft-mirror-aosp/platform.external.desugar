@@ -15,7 +15,7 @@ java_library(
     visibility = ["//tools/external/desugar:__subpackages__"],
     deps = [
         ":deps-neverlink",
-        "//prebuilts/tools/common/m2/repository/com/google/guava/guava/20.0:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/guava/guava/21.0:jar",
     ],
 )
 
