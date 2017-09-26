@@ -28,7 +28,10 @@ core.workflow(
     transformations = [
         core.verify_match(
             regex = "Licensed under the Apache License, Version 2.0",
-            paths = glob(["**"]),
+            paths = glob(["**"], exclude = [
+                "src/test/java/com/google/devtools/build/android/desugar/**.txt",
+                "src/test/java/com/google/devtools/build/android/desugar/**.jar"
+                ]),
         ),
         core.move("src/tools/android", ""),
         core.move("src/main", ""),

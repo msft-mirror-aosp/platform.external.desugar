@@ -21,7 +21,6 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.List;
 
 /**
  * Everything the {@link OptionsParser} needs to know about how an option is defined.
@@ -33,18 +32,23 @@ import java.util.List;
 public class OptionDefinition {
 
   // TODO(b/65049598) make ConstructionException checked, which will make this checked as well.
-  public static class NotAnOptionException extends ConstructionException {
-    public NotAnOptionException(Field field) {
+  static class NotAnOptionException extends ConstructionException {
+    NotAnOptionException(Field field) {
       super(
-          "The field " + field + " does not have the right annotation to be considered an option.");
+          "The field "
+              + field.getName()
+              + " does not have the right annotation to be considered an option.");
     }
   }
 
   /**
    * If the {@code field} is annotated with the appropriate @{@link Option} annotation, returns the
    * {@code OptionDefinition} for that option. Otherwise, throws a {@link NotAnOptionException}.
+   *
+   * <p>These values are cached in the {@link OptionsData} layer and should be accessed through
+   * {@link OptionsParser#getOptionDefinitions(Class)}.
    */
-  public static OptionDefinition extractOptionDefinition(Field field) {
+  static OptionDefinition extractOptionDefinition(Field field) {
     Option annotation = field == null ? null : field.getAnnotation(Option.class);
     if (annotation == null) {
       throw new NotAnOptionException(field);
@@ -157,6 +161,11 @@ public class OptionDefinition {
     return optionAnnotation.wrapperOption();
   }
 
+  /** Returns whether an option --foo has a negative equivalent --nofoo. */
+  public boolean hasNegativeOption() {
+    return getType().equals(boolean.class) || getType().equals(TriState.class);
+  }
+
   /** The type of the optionDefinition. */
   public Class<?> getType() {
     return field.getType();
@@ -176,6 +185,11 @@ public class OptionDefinition {
     return (getOptionExpansion().length > 0 || usesExpansionFunction());
   }
 
+  /** Returns whether the arg is an expansion option. */
+  public boolean hasImplicitRequirements() {
+    return (getImplicitRequirements().length > 0);
+  }
+
   /**
    * Returns whether the arg is an expansion option defined by an expansion function (and not a
    * constant expansion value).
@@ -192,20 +206,9 @@ public class OptionDefinition {
   Type getFieldSingularType() {
     Type fieldType = getField().getGenericType();
     if (allowsMultiple()) {
-      // If the type isn't a List<T>, this is an error in the option's declaration.
-      if (!(fieldType instanceof ParameterizedType)) {
-        throw new ConstructionException(
-            String.format(
-                "Option %s allows multiple occurrences, so must be of type List<...>",
-                getField().getName()));
-      }
+      // The validity of the converter is checked at compile time. We know the type to be
+      // List<singularType>.
       ParameterizedType pfieldType = (ParameterizedType) fieldType;
-      if (pfieldType.getRawType() != List.class) {
-        throw new ConstructionException(
-            String.format(
-                "Option %s allows multiple occurrences, so must be of type List<...>",
-                getField().getName()));
-      }
       fieldType = pfieldType.getActualTypeArguments()[0];
     }
     return fieldType;
@@ -217,7 +220,7 @@ public class OptionDefinition {
    *
    * <p>Memoizes the converter-finding logic to avoid repeating the computation.
    */
-  Converter<?> getConverter() {
+  public Converter<?> getConverter() {
     if (converter != null) {
       return converter;
     }
@@ -226,13 +229,6 @@ public class OptionDefinition {
       // No converter provided, use the default one.
       Type type = getFieldSingularType();
       converter = Converters.DEFAULT_CONVERTERS.get(type);
-      if (converter == null) {
-        throw new ConstructionException(
-            String.format(
-                "Option %s expects values of type %s, but no converter was found; possible fix: "
-                    + "add converter=... to its @Option annotation.",
-                getField().getName(), type));
-      }
     } else {
       try {
         // Instantiate the given Converter class.
@@ -254,7 +250,7 @@ public class OptionDefinition {
    *
    * <p>Can be used for usage help and controlling whether the "no" prefix is allowed.
    */
-  boolean isBooleanField() {
+  public boolean usesBooleanValueSyntax() {
     return getType().equals(boolean.class)
         || getType().equals(TriState.class)
         || getConverter() instanceof BoolOrEnumConverter;
@@ -286,6 +282,25 @@ public class OptionDefinition {
       }
     }
     return defaultValue;
+  }
+
+  /**
+   * {@link OptionDefinition} is really a wrapper around a {@link Field} that caches information
+   * obtained through reflection. Checking that the fields they represent are equal is sufficient
+   * to check that two {@link OptionDefinition} objects are equal.
+   */
+  @Override
+  public boolean equals(Object object) {
+    if (!(object instanceof OptionDefinition)) {
+      return false;
+    }
+    OptionDefinition otherOption = (OptionDefinition) object;
+    return field.equals(otherOption.field);
+  }
+
+  @Override
+  public int hashCode() {
+    return field.hashCode();
   }
 
   static final Comparator<OptionDefinition> BY_OPTION_NAME =

@@ -39,7 +39,7 @@ class OptionsUsage {
   static void getUsage(Class<? extends OptionsBase> optionsClass, StringBuilder usage) {
     OptionsData data = OptionsParser.getOptionsDataInternal(optionsClass);
     List<OptionDefinition> optionDefinitions =
-        new ArrayList<>(data.getOptionDefinitionsFromClass(optionsClass));
+        new ArrayList<>(OptionsData.getAllOptionDefinitionsForClass(optionsClass));
     optionDefinitions.sort(OptionDefinition.BY_OPTION_NAME);
     for (OptionDefinition optionDefinition : optionDefinitions) {
       getUsage(optionDefinition, usage, OptionsParser.HelpVerbosity.LONG, data);
@@ -146,7 +146,7 @@ class OptionsUsage {
       usage.append(paragraphFill(expandsMsg.toString(), /*indent=*/ 6, /*width=*/ 80));
       usage.append('\n');
     }
-    if (optionDefinition.getImplicitRequirements().length > 0) {
+    if (optionDefinition.hasImplicitRequirements()) {
       StringBuilder requiredMsg = new StringBuilder("Using this option will also add: ");
       for (String req : optionDefinition.getImplicitRequirements()) {
         requiredMsg.append(req).append(" ");
@@ -168,7 +168,7 @@ class OptionsUsage {
     String typeDescription = getTypeDescription(optionDefinition);
     usage.append("<dt><code><a name=\"flag--").append(plainFlagName).append("\"></a>--");
     usage.append(flagName);
-    if (optionDefinition.isBooleanField() || optionDefinition.isVoidField()) {
+    if (optionDefinition.usesBooleanValueSyntax() || optionDefinition.isVoidField()) {
       // Nothing for boolean, tristate, boolean_or_enum, or void options.
     } else if (!valueDescription.isEmpty()) {
       usage.append("=").append(escaper.escape(valueDescription));
@@ -285,6 +285,6 @@ class OptionsUsage {
 
   static String getFlagName(OptionDefinition optionDefinition) {
     String name = optionDefinition.getOptionName();
-    return optionDefinition.isBooleanField() ? "[no]" + name : name;
+    return optionDefinition.usesBooleanValueSyntax() ? "[no]" + name : name;
   }
 }

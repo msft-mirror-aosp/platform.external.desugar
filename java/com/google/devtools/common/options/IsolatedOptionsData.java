@@ -19,16 +19,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.common.options.OptionDefinition.NotAnOptionException;
 import com.google.devtools.common.options.OptionsParser.ConstructionException;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import javax.annotation.concurrent.Immutable;
@@ -51,6 +45,40 @@ import javax.annotation.concurrent.Immutable;
 public class IsolatedOptionsData extends OpaqueOptionsData {
 
   /**
+   * Cache for the options in an OptionsBase.
+   *
+   * <p>Mapping from options class to a list of all {@code OptionFields} in that class. The map
+   * entries are unordered, but the fields in the lists are ordered alphabetically. This caches the
+   * work of reflection done for the same {@code optionsBase} across multiple {@link OptionsData}
+   * instances, and must be used through the thread safe {@link
+   * #getAllOptionDefinitionsForClass(Class)}
+   */
+  private static final Map<Class<? extends OptionsBase>, ImmutableList<OptionDefinition>>
+      allOptionsFields = new HashMap<>();
+
+  /** Returns all {@code optionDefinitions}, ordered by their option name (not their field name). */
+  public static synchronized ImmutableList<OptionDefinition> getAllOptionDefinitionsForClass(
+      Class<? extends OptionsBase> optionsClass) {
+    return allOptionsFields.computeIfAbsent(
+        optionsClass,
+        optionsBaseClass ->
+            Arrays.stream(optionsBaseClass.getFields())
+                .map(
+                    field -> {
+                      try {
+                        return OptionDefinition.extractOptionDefinition(field);
+                      } catch (NotAnOptionException e) {
+                        // Ignore non-@Option annotated fields. Requiring all fields in the
+                        // OptionsBase to be @Option-annotated requires a depot cleanup.
+                        return null;
+                      }
+                    })
+                .filter(Objects::nonNull)
+                .sorted(OptionDefinition.BY_OPTION_NAME)
+                .collect(ImmutableList.toImmutableList()));
+  }
+
+  /**
    * Mapping from each options class to its no-arg constructor. Entries appear in the same order
    * that they were passed to {@link #from(Collection)}.
    */
@@ -63,15 +91,17 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
    */
   private final ImmutableMap<String, OptionDefinition> nameToField;
 
+  /**
+   * For options that have an "OldName", this is a mapping from old name to its corresponding {@code
+   * OptionDefinition}. Entries appear ordered first by their options class (the order in which they
+   * were passed to {@link #from(Collection)}, and then in alphabetic order within each options
+   * class.
+   */
+  private final ImmutableMap<String, OptionDefinition> oldNameToField;
+
   /** Mapping from option abbreviation to {@code OptionDefinition} (unordered). */
   private final ImmutableMap<Character, OptionDefinition> abbrevToField;
 
-  /**
-   * Mapping from options class to a list of all {@code OptionFields} in that class. The map entries
-   * are unordered, but the fields in the lists are ordered alphabetically.
-   */
-  private final ImmutableMap<Class<? extends OptionsBase>, ImmutableList<OptionDefinition>>
-      allOptionsFields;
 
   /**
    * Mapping from each options class to whether or not it has the {@link UsesOnlyCoreTypes}
@@ -79,20 +109,16 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
    */
   private final ImmutableMap<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypes;
 
-  /** These categories used to indicate OptionUsageRestrictions, but no longer. */
-  private static final ImmutableList<String> DEPRECATED_CATEGORIES = ImmutableList.of(
-      "undocumented", "hidden", "internal");
-
   private IsolatedOptionsData(
       Map<Class<? extends OptionsBase>, Constructor<?>> optionsClasses,
       Map<String, OptionDefinition> nameToField,
+      Map<String, OptionDefinition> oldNameToField,
       Map<Character, OptionDefinition> abbrevToField,
-      Map<Class<? extends OptionsBase>, ImmutableList<OptionDefinition>> allOptionsFields,
       Map<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypes) {
     this.optionsClasses = ImmutableMap.copyOf(optionsClasses);
     this.nameToField = ImmutableMap.copyOf(nameToField);
+    this.oldNameToField = ImmutableMap.copyOf(oldNameToField);
     this.abbrevToField = ImmutableMap.copyOf(abbrevToField);
-    this.allOptionsFields = ImmutableMap.copyOf(allOptionsFields);
     this.usesOnlyCoreTypes = ImmutableMap.copyOf(usesOnlyCoreTypes);
   }
 
@@ -100,8 +126,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     this(
         other.optionsClasses,
         other.nameToField,
+        other.oldNameToField,
         other.abbrevToField,
-        other.allOptionsFields,
         other.usesOnlyCoreTypes);
   }
 
@@ -118,16 +144,20 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     return (Constructor<T>) optionsClasses.get(clazz);
   }
 
-  public OptionDefinition getFieldFromName(String name) {
-    return nameToField.get(name);
+  /**
+   * Returns the option in this parser by the provided name, or {@code null} if none is found. This
+   * will match both the canonical name of an option, and any old name listed that we still accept.
+   */
+  public OptionDefinition getOptionDefinitionFromName(String name) {
+    return nameToField.getOrDefault(name, oldNameToField.get(name));
   }
 
   /**
-   * Returns all pairs of option names (not field names) and their corresponding {@link Field}
-   * objects. Entries appear ordered first by their options class (the order in which they were
-   * passed to {@link #from(Collection)}, and then in alphabetic order within each options class.
+   * Returns all {@link OptionDefinition} objects loaded, mapped by their canonical names. Entries
+   * appear ordered first by their options class (the order in which they were passed to {@link
+   * #from(Collection)}, and then in alphabetic order within each options class.
    */
-  public Iterable<Map.Entry<String, OptionDefinition>> getAllNamedFields() {
+  public Iterable<Map.Entry<String, OptionDefinition>> getAllOptionDefinitions() {
     return nameToField.entrySet();
   }
 
@@ -135,50 +165,30 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     return abbrevToField.get(abbrev);
   }
 
-  /**
-   * Returns a list of all {@link Field} objects for options in the given options class, ordered
-   * alphabetically by option name.
-   */
-  public ImmutableList<OptionDefinition> getOptionDefinitionsFromClass(
-      Class<? extends OptionsBase> optionsClass) {
-    return allOptionsFields.get(optionsClass);
-  }
-
   public boolean getUsesOnlyCoreTypes(Class<? extends OptionsBase> optionsClass) {
     return usesOnlyCoreTypes.get(optionsClass);
   }
 
-  /** Returns all {@code optionDefinitions}, ordered by their option name (not their field name). */
-  private static ImmutableList<OptionDefinition> getAllOptionDefinitionsSorted(
-      Class<? extends OptionsBase> optionsClass) {
-    return Arrays.stream(optionsClass.getFields())
-        .map(
-            field -> {
-              try {
-                return OptionDefinition.extractOptionDefinition(field);
-              } catch (NotAnOptionException e) {
-                // Ignore non-@Option annotated fields. Requiring all fields in the OptionsBase to
-                // be @Option-annotated requires a depot cleanup.
-                return null;
-              }
-            })
-        .filter(Objects::nonNull)
-        .sorted(OptionDefinition.BY_OPTION_NAME)
-        .collect(ImmutableList.toImmutableList());
-  }
-
+  /**
+   * Generic method to check for collisions between the names we give options. Useful for checking
+   * both single-character abbreviations and full names.
+   */
   private static <A> void checkForCollisions(
-      Map<A, OptionDefinition> aFieldMap, A optionName, String description) {
+      Map<A, OptionDefinition> aFieldMap, A optionName, String description)
+      throws DuplicateOptionDeclarationException {
     if (aFieldMap.containsKey(optionName)) {
       throw new DuplicateOptionDeclarationException(
           "Duplicate option name, due to " + description + ": --" + optionName);
     }
   }
 
+  /**
+   * All options, even non-boolean ones, should check that they do not conflict with previously
+   * loaded boolean options.
+   */
   private static void checkForBooleanAliasCollisions(
-      Map<String, String> booleanAliasMap,
-      String optionName,
-      String description) {
+      Map<String, String> booleanAliasMap, String optionName, String description)
+      throws DuplicateOptionDeclarationException {
     if (booleanAliasMap.containsKey(optionName)) {
       throw new DuplicateOptionDeclarationException(
           "Duplicate option name, due to "
@@ -190,12 +200,20 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     }
   }
 
+  /**
+   * For an {@code option} of boolean type, this checks that the boolean alias does not conflict
+   * with other names, and adds the boolean alias to a list so that future flags can find if they
+   * conflict with a boolean alias..
+   */
   private static void checkAndUpdateBooleanAliases(
       Map<String, OptionDefinition> nameToFieldMap,
+      Map<String, OptionDefinition> oldNameToFieldMap,
       Map<String, String> booleanAliasMap,
-      String optionName) {
+      String optionName)
+      throws DuplicateOptionDeclarationException {
     // Check that the negating alias does not conflict with existing flags.
     checkForCollisions(nameToFieldMap, "no" + optionName, "boolean option alias");
+    checkForCollisions(oldNameToFieldMap, "no" + optionName, "boolean option alias");
 
     // Record that the boolean option takes up additional namespace for its negating alias.
     booleanAliasMap.put("no" + optionName, optionName);
@@ -209,9 +227,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
   static IsolatedOptionsData from(Collection<Class<? extends OptionsBase>> classes) {
     // Mind which fields have to preserve order.
     Map<Class<? extends OptionsBase>, Constructor<?>> constructorBuilder = new LinkedHashMap<>();
-    Map<Class<? extends OptionsBase>, ImmutableList<OptionDefinition>> allOptionsFieldsBuilder =
-        new HashMap<>();
     Map<String, OptionDefinition> nameToFieldBuilder = new LinkedHashMap<>();
+    Map<String, OptionDefinition> oldNameToFieldBuilder = new LinkedHashMap<>();
     Map<Character, OptionDefinition> abbrevToFieldBuilder = new HashMap<>();
 
     // Maps the negated boolean flag aliases to the original option name.
@@ -219,134 +236,61 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
 
     Map<Class<? extends OptionsBase>, Boolean> usesOnlyCoreTypesBuilder = new HashMap<>();
 
-    // Read all Option annotations:
+    // Combine the option definitions for these options classes, and check that they do not
+    // conflict. The options are individually checked for correctness at compile time in the
+    // OptionProcessor.
     for (Class<? extends OptionsBase> parsedOptionsClass : classes) {
       try {
-        Constructor<? extends OptionsBase> constructor =
-            parsedOptionsClass.getConstructor();
+        Constructor<? extends OptionsBase> constructor = parsedOptionsClass.getConstructor();
         constructorBuilder.put(parsedOptionsClass, constructor);
       } catch (NoSuchMethodException e) {
         throw new IllegalArgumentException(parsedOptionsClass
             + " lacks an accessible default constructor");
       }
       ImmutableList<OptionDefinition> optionDefinitions =
-          getAllOptionDefinitionsSorted(parsedOptionsClass);
-      allOptionsFieldsBuilder.put(parsedOptionsClass, optionDefinitions);
+          getAllOptionDefinitionsForClass(parsedOptionsClass);
 
       for (OptionDefinition optionDefinition : optionDefinitions) {
-        String optionName = optionDefinition.getOptionName();
-
-        // Check that the option makes sense on its own, as defined.
-        if (optionName == null) {
-          throw new ConstructionException("Option cannot have a null name");
-        }
-
-        if (DEPRECATED_CATEGORIES.contains(optionDefinition.getOptionCategory())) {
-          throw new ConstructionException(
-              "Documentation level is no longer read from the option category. Category \""
-                  + optionDefinition.getOptionCategory()
-                  + "\" in option \""
-                  + optionName
-                  + "\" is disallowed.");
-        }
-
-        Type fieldType = optionDefinition.getFieldSingularType();
-        // For simple, static expansions, don't accept non-Void types.
-        if (optionDefinition.getOptionExpansion().length != 0 && !optionDefinition.isVoidField()) {
-          throw new ConstructionException(
-              "Option "
-                  + optionDefinition.getOptionName()
-                  + " is an expansion flag with a static expansion, but does not have Void type.");
-        }
-
-        // Get the converter's return type to check that it matches the option type.
-        @SuppressWarnings("rawtypes")
-        Class<? extends Converter> converterClass = optionDefinition.getProvidedConverter();
-        if (converterClass == Converter.class) {
-          Converter<?> actualConverter = Converters.DEFAULT_CONVERTERS.get(fieldType);
-          if (actualConverter == null) {
-            throw new ConstructionException(
-                "Cannot find converter for field of type "
-                    + optionDefinition.getType()
-                    + " named "
-                    + optionDefinition.getField().getName()
-                    + " in class "
-                    + optionDefinition.getField().getDeclaringClass().getName());
-          }
-          converterClass = actualConverter.getClass();
-        }
-        if (Modifier.isAbstract(converterClass.getModifiers())) {
-          throw new ConstructionException(
-              "The converter type " + converterClass + " must be a concrete type");
-        }
-        Type converterResultType;
         try {
-          Method convertMethod = converterClass.getMethod("convert", String.class);
-          converterResultType =
-              GenericTypeHelper.getActualReturnType(converterClass, convertMethod);
-        } catch (NoSuchMethodException e) {
-          throw new ConstructionException(
-              "A known converter object doesn't implement the convert method");
-        }
-
-        if (optionDefinition.allowsMultiple()) {
-          if (GenericTypeHelper.getRawType(converterResultType) == List.class) {
-            Type elementType =
-                ((ParameterizedType) converterResultType).getActualTypeArguments()[0];
-            if (!GenericTypeHelper.isAssignableFrom(fieldType, elementType)) {
-              throw new ConstructionException(
-                  "If the converter return type of a multiple occurrence option is a list, then "
-                      + "the type of list elements ("
-                      + fieldType
-                      + ") must be assignable from the converter list element type ("
-                      + elementType
-                      + ")");
-            }
-          } else {
-            if (!GenericTypeHelper.isAssignableFrom(fieldType, converterResultType)) {
-              throw new ConstructionException(
-                  "Type of list elements ("
-                      + fieldType
-                      + ") for multiple occurrence option must be assignable from the converter "
-                      + "return type ("
-                      + converterResultType
-                      + ")");
-            }
-          }
-        } else {
-          if (!GenericTypeHelper.isAssignableFrom(fieldType, converterResultType)) {
-            throw new ConstructionException(
-                "Type of field ("
-                    + fieldType
-                    + ") must be assignable from the converter return type ("
-                    + converterResultType
-                    + ")");
-          }
-        }
-
-        if (optionDefinition.isBooleanField()) {
-          checkAndUpdateBooleanAliases(nameToFieldBuilder, booleanAliasMap, optionName);
-        }
-
-        checkForCollisions(nameToFieldBuilder, optionName, "option");
-        checkForBooleanAliasCollisions(booleanAliasMap, optionName, "option");
-        nameToFieldBuilder.put(optionName, optionDefinition);
-
-        if (!optionDefinition.getOldOptionName().isEmpty()) {
-          String oldName = optionDefinition.getOldOptionName();
-          checkForCollisions(nameToFieldBuilder, oldName, "old option name");
-          checkForBooleanAliasCollisions(booleanAliasMap, oldName, "old option name");
-          nameToFieldBuilder.put(optionDefinition.getOldOptionName(), optionDefinition);
-
-          // If boolean, repeat the alias dance for the old name.
-          if (optionDefinition.isBooleanField()) {
-            checkAndUpdateBooleanAliases(nameToFieldBuilder, booleanAliasMap, oldName);
-          }
-        }
-        if (optionDefinition.getAbbreviation() != '\0') {
+          String optionName = optionDefinition.getOptionName();
+          checkForCollisions(nameToFieldBuilder, optionName, "option name collision");
           checkForCollisions(
-              abbrevToFieldBuilder, optionDefinition.getAbbreviation(), "option abbreviation");
-          abbrevToFieldBuilder.put(optionDefinition.getAbbreviation(), optionDefinition);
+              oldNameToFieldBuilder,
+              optionName,
+              "option name collision with another option's old name");
+          checkForBooleanAliasCollisions(booleanAliasMap, optionName, "option");
+          if (optionDefinition.usesBooleanValueSyntax()) {
+            checkAndUpdateBooleanAliases(
+                nameToFieldBuilder, oldNameToFieldBuilder, booleanAliasMap, optionName);
+          }
+          nameToFieldBuilder.put(optionName, optionDefinition);
+
+          if (!optionDefinition.getOldOptionName().isEmpty()) {
+            String oldName = optionDefinition.getOldOptionName();
+            checkForCollisions(
+                nameToFieldBuilder,
+                oldName,
+                "old option name collision with another option's canonical name");
+            checkForCollisions(
+                oldNameToFieldBuilder,
+                oldName,
+                "old option name collision with another old option name");
+            checkForBooleanAliasCollisions(booleanAliasMap, oldName, "old option name");
+            // If boolean, repeat the alias dance for the old name.
+            if (optionDefinition.usesBooleanValueSyntax()) {
+              checkAndUpdateBooleanAliases(
+                  nameToFieldBuilder, oldNameToFieldBuilder, booleanAliasMap, oldName);
+            }
+            // Now that we've checked for conflicts, confidently store the old name.
+            oldNameToFieldBuilder.put(oldName, optionDefinition);
+          }
+          if (optionDefinition.getAbbreviation() != '\0') {
+            checkForCollisions(
+                abbrevToFieldBuilder, optionDefinition.getAbbreviation(), "option abbreviation");
+            abbrevToFieldBuilder.put(optionDefinition.getAbbreviation(), optionDefinition);
+          }
+        } catch (DuplicateOptionDeclarationException e) {
+          throw new ConstructionException(e);
         }
       }
 
@@ -375,8 +319,8 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
     return new IsolatedOptionsData(
         constructorBuilder,
         nameToFieldBuilder,
+        oldNameToFieldBuilder,
         abbrevToFieldBuilder,
-        allOptionsFieldsBuilder,
         usesOnlyCoreTypesBuilder);
   }
 
