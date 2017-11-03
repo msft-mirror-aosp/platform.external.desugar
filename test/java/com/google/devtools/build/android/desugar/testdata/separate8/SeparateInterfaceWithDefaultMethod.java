@@ -11,20 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package com.google.devtools.build.android.desugar.testdata.java8;
+package com.google.devtools.build.android.desugar.testdata.separate8;
 
-import com.google.common.collect.ImmutableList;
-import java.util.List;
-import java.util.stream.Collectors;
-
-public class ConcreteDefaultInterfaceWithLambda implements DefaultInterfaceWithLambda {
-  static final String ONE = String.valueOf(1);
-
-  @Override
-  public List<String> digits() {
-    return ImmutableList.of(0, 2)
-        .stream()
-        .map(i -> i == 0 ? ONE : String.valueOf(i))
-        .collect(Collectors.toList());
+/** Interface with default method in separate compilation target for testing b/65645388. */
+public interface SeparateInterfaceWithDefaultMethod {
+  default String dflt() {
+    return "dflt";
   }
 }
