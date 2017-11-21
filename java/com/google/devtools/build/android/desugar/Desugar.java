@@ -176,6 +176,26 @@ class Desugar {
     public int minSdkVersion;
 
     @Option(
+      name = "emit_dependency_metadata_as_needed",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "Whether to emit META-INF/desugar_deps as needed for later consistency checking."
+    )
+    public boolean emitDependencyMetadata;
+
+    @Option(
+      name = "best_effort_tolerate_missing_deps",
+      defaultValue = "true",
+      category = "misc",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "Whether to tolerate missing dependencies on the classpath in some cases.  You should "
+          + "strive to set this flag to false."
+    )
+    public boolean tolerateMissingDependencies;
+
+    @Option(
       name = "desugar_interface_method_bodies_if_needed",
       defaultValue = "true",
       category = "misc",
@@ -225,7 +245,6 @@ class Desugar {
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
       effectTags = {OptionEffectTag.UNKNOWN},
-      implicitRequirements = "--allow_empty_bootclasspath",
       help = "Enables rewriting to desugar java.* classes."
     )
     public boolean coreLibrary;
@@ -316,6 +335,7 @@ class Desugar {
 
     try (OutputFileProvider outputFileProvider = toOutputFileProvider(outputPath);
         InputFileProvider inputFiles = toInputFileProvider(inputPath)) {
+      DependencyCollector depsCollector = createDepsCollector();
       IndexedInputs indexedInputFiles = new IndexedInputs(ImmutableList.of(inputFiles));
       // Prepend classpath with input file itself so LambdaDesugaring can load classes with
       // lambdas.
@@ -344,6 +364,7 @@ class Desugar {
           outputFileProvider,
           loader,
           classpathReader,
+          depsCollector,
           bootclasspathReader,
           interfaceLambdaMethodCollector);
 
@@ -351,18 +372,50 @@ class Desugar {
           outputFileProvider,
           loader,
           classpathReader,
+          depsCollector,
           bootclasspathReader,
           interfaceLambdaMethodCollector.build(),
           bridgeMethodReader);
 
-      desugarAndWriteGeneratedClasses(outputFileProvider);
+      desugarAndWriteGeneratedClasses(outputFileProvider, bootclasspathReader);
       copyThrowableExtensionClass(outputFileProvider);
+
+      byte[] depsInfo = depsCollector.toByteArray();
+      if (depsInfo != null) {
+        outputFileProvider.write(OutputFileProvider.DESUGAR_DEPS_FILENAME, depsInfo);
+      }
     }
 
     ImmutableMap<Path, LambdaInfo> lambdasLeftBehind = lambdas.drain();
     checkState(lambdasLeftBehind.isEmpty(), "Didn't process %s", lambdasLeftBehind);
     ImmutableMap<String, ClassNode> generatedLeftBehind = store.drain();
     checkState(generatedLeftBehind.isEmpty(), "Didn't process %s", generatedLeftBehind.keySet());
+  }
+
+  /**
+   * Returns a dependency collector for use with a single input Jar.  If
+   * {@link DesugarOptions#emitDependencyMetadata} is set, this method instantiates the collector
+   * reflectively to allow compiling and using the desugar tool without this mechanism.
+   */
+  private DependencyCollector createDepsCollector() {
+    if (options.emitDependencyMetadata) {
+      try {
+        return (DependencyCollector)
+            Thread.currentThread()
+                .getContextClassLoader()
+                .loadClass(
+                    "com.google.devtools.build.android.desugar.dependencies.MetadataCollector")
+                .getConstructor(Boolean.TYPE)
+                .newInstance(options.tolerateMissingDependencies);
+      } catch (ReflectiveOperationException
+          | SecurityException e) {
+        throw new IllegalStateException("Can't emit desugaring metadata as requested");
+      }
+    } else if (options.tolerateMissingDependencies) {
+      return DependencyCollector.NoWriteCollectors.NOOP;
+    } else {
+      return DependencyCollector.NoWriteCollectors.FAIL_ON_MISSING;
+    }
   }
 
   private void copyThrowableExtensionClass(OutputFileProvider outputFileProvider) {
@@ -390,10 +443,15 @@ class Desugar {
       OutputFileProvider outputFileProvider,
       ClassLoader loader,
       @Nullable ClassReaderFactory classpathReader,
+      DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
       Builder<String> interfaceLambdaMethodCollector)
       throws IOException {
     for (String filename : inputFiles) {
+      if (OutputFileProvider.DESUGAR_DEPS_FILENAME.equals(filename)) {
+        // TODO(kmb): rule out that this happens or merge input file with what's in depsCollector
+        continue;  // skip as we're writing a new file like this at the end or don't want it
+      }
       try (InputStream content = inputFiles.getInputStream(filename)) {
         // We can write classes uncompressed since they need to be converted to .dex format
         // for Android anyways. Resources are written as they were in the input jar to avoid
@@ -405,6 +463,7 @@ class Desugar {
               createClassVisitorsForClassesInInputs(
                   loader,
                   classpathReader,
+                  depsCollector,
                   bootclasspathReader,
                   interfaceLambdaMethodCollector,
                   writer,
@@ -431,6 +490,7 @@ class Desugar {
       OutputFileProvider outputFileProvider,
       ClassLoader loader,
       @Nullable ClassReaderFactory classpathReader,
+      DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
       ImmutableSet<String> interfaceLambdaMethods,
       @Nullable ClassReaderFactory bridgeMethodReader)
@@ -460,6 +520,7 @@ class Desugar {
             createClassVisitorsForDumpedLambdaClasses(
                 loader,
                 classpathReader,
+                depsCollector,
                 bootclasspathReader,
                 interfaceLambdaMethods,
                 bridgeMethodReader,
@@ -473,7 +534,8 @@ class Desugar {
     }
   }
 
-  private void desugarAndWriteGeneratedClasses(OutputFileProvider outputFileProvider)
+  private void desugarAndWriteGeneratedClasses(
+      OutputFileProvider outputFileProvider, ClassReaderFactory bootclasspathReader)
       throws IOException {
     // Write out any classes we generated along the way
     ImmutableMap<String, ClassNode> generatedClasses = store.drain();
@@ -485,7 +547,8 @@ class Desugar {
       UnprefixingClassWriter writer = rewriter.writer(ClassWriter.COMPUTE_MAXS);
       // checkState above implies that we want Java 7 .class files, so send through that visitor.
       // Don't need a ClassReaderFactory b/c static interface methods should've been moved.
-      ClassVisitor visitor = new Java7Compatibility(writer, (ClassReaderFactory) null);
+      ClassVisitor visitor =
+          new Java7Compatibility(writer, (ClassReaderFactory) null, bootclasspathReader);
       generated.getValue().accept(visitor);
       String filename = rewriter.unprefix(generated.getKey()) + ".class";
       outputFileProvider.write(filename, writer.toByteArray());
@@ -499,6 +562,7 @@ class Desugar {
   private ClassVisitor createClassVisitorsForDumpedLambdaClasses(
       ClassLoader loader,
       @Nullable ClassReaderFactory classpathReader,
+      DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
       ImmutableSet<String> interfaceLambdaMethods,
       @Nullable ClassReaderFactory bridgeMethodReader,
@@ -520,12 +584,14 @@ class Desugar {
     }
     if (outputJava7) {
       // null ClassReaderFactory b/c we don't expect to need it for lambda classes
-      visitor = new Java7Compatibility(visitor, (ClassReaderFactory) null);
+      visitor = new Java7Compatibility(visitor, (ClassReaderFactory) null, bootclasspathReader);
       if (options.desugarInterfaceMethodBodiesIfNeeded) {
         visitor =
-            new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader, loader);
+            new DefaultMethodClassFixer(
+                visitor, classpathReader, depsCollector, bootclasspathReader, loader);
         visitor =
-            new InterfaceDesugaring(visitor, bootclasspathReader, store, options.legacyJacocoFix);
+            new InterfaceDesugaring(
+                visitor, depsCollector, bootclasspathReader, store, options.legacyJacocoFix);
       }
     }
     visitor =
@@ -553,6 +619,7 @@ class Desugar {
   private ClassVisitor createClassVisitorsForClassesInInputs(
       ClassLoader loader,
       @Nullable ClassReaderFactory classpathReader,
+      DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
       Builder<String> interfaceLambdaMethodCollector,
       UnprefixingClassWriter writer,
@@ -571,12 +638,14 @@ class Desugar {
     }
     if (!options.onlyDesugarJavac9ForLint) {
       if (outputJava7) {
-        visitor = new Java7Compatibility(visitor, classpathReader);
+        visitor = new Java7Compatibility(visitor, classpathReader, bootclasspathReader);
         if (options.desugarInterfaceMethodBodiesIfNeeded) {
           visitor =
-              new DefaultMethodClassFixer(visitor, classpathReader, bootclasspathReader, loader);
+              new DefaultMethodClassFixer(
+                  visitor, classpathReader, depsCollector, bootclasspathReader, loader);
           visitor =
-              new InterfaceDesugaring(visitor, bootclasspathReader, store, options.legacyJacocoFix);
+              new InterfaceDesugaring(
+                  visitor, depsCollector, bootclasspathReader, store, options.legacyJacocoFix);
         }
       }
       // LambdaDesugaring is relatively expensive, so check first whether we need it.  Additionally,

@@ -11,15 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package com.google.devtools.common.options;
+package com.google.devtools.build.android.desugar.testdata.java8;
 
-/**
- * Exception specific to evaluating {@link ExpansionFunction} objects. Used when expansion isn't
- * possible because of a missing input.
- */
-public final class ExpansionNeedsValueException extends OptionsParsingException {
+import com.google.devtools.build.android.desugar.testdata.separate8.SeparateInterfaceThatInheritsDefaultMethod;
 
-  public ExpansionNeedsValueException(String message) {
-    super(message);
+/** Test class that overrides default method defined in separate target for testing b/65645388. */
+public class DefaultMethodFromSeparateJava8TargetOverridden
+    implements SeparateInterfaceThatInheritsDefaultMethod {
+  @Override
+  public String dflt() {
+    return "override";
   }
 }
