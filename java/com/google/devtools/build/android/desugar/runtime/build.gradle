@@ -18,7 +18,7 @@ apply from: "$rootDir/buildSrc/base/baseJava.gradle"
 sourceSets {
     main {
         java {
-            srcDirs '*.java'
+            srcDirs '.'
         }
     }
 }
