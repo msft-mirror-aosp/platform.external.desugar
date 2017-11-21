@@ -15,6 +15,7 @@
 package com.google.devtools.common.options;
 
 import com.google.common.collect.ImmutableList;
+import java.util.function.Function;
 import javax.annotation.Nullable;
 
 /**
@@ -49,6 +50,46 @@ public final class ParsedOptionDescription {
     return commandLineForm;
   }
 
+  public String getCanonicalForm() {
+    return getCanonicalFormWithValueEscaper(s -> s);
+  }
+
+  public String getCanonicalFormWithValueEscaper(Function<String, String> escapingFunction) {
+    // For boolean flags (note that here we do not check for TriState flags, only flags with actual
+    // boolean values, so that we know the return type of getConvertedValue), use the --[no]flag
+    // form for the canonical value.
+    if (optionDefinition.getType().equals(boolean.class)) {
+      try {
+        return ((boolean) getConvertedValue() ? "--" : "--no") + optionDefinition.getOptionName();
+      } catch (OptionsParsingException e) {
+        throw new RuntimeException("Unexpected parsing exception", e);
+      }
+    } else {
+      String optionString = "--" + optionDefinition.getOptionName();
+      if (unconvertedValue != null) { // Can be null for Void options.
+        optionString += "=" + escapingFunction.apply(unconvertedValue);
+      }
+      return optionString;
+    }
+  }
+
+  @Deprecated
+  // TODO(b/65646296) Once external dependencies are cleaned up, use getCanonicalForm()
+  String getDeprecatedCanonicalForm() {
+    String value = unconvertedValue;
+    // For boolean flags (note that here we do not check for TriState flags, only flags with actual
+    // boolean values, so that we know the return type of getConvertedValue), set them all to 1 or
+    // 0, instead of keeping the wide variety of values we accept in their original form.
+    if (optionDefinition.getType().equals(boolean.class)) {
+      try {
+        value = (boolean) getConvertedValue() ? "1" : "0";
+      } catch (OptionsParsingException e) {
+        throw new RuntimeException("Unexpected parsing exception", e);
+      }
+    }
+    return String.format("--%s=%s", optionDefinition.getOptionName(), value);
+  }
+
   public boolean isBooleanOption() {
     return optionDefinition.getType().equals(boolean.class);
   }
@@ -74,7 +115,11 @@ public final class ParsedOptionDescription {
     return unconvertedValue;
   }
 
-  OptionPriority getPriority() {
+  public OptionInstanceOrigin getOrigin() {
+    return origin;
+  }
+
+  public OptionPriority getPriority() {
     return origin.getPriority();
   }
 
@@ -108,7 +153,7 @@ public final class ParsedOptionDescription {
   @Override
   public String toString() {
     StringBuilder result = new StringBuilder();
-    result.append("option '").append(optionDefinition.getOptionName()).append("' ");
+    result.append(optionDefinition);
     result.append("set to '").append(unconvertedValue).append("' ");
     result.append("with priority ").append(origin.getPriority());
     if (origin.getSource() != null) {
