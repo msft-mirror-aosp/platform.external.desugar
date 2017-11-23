@@ -13,18 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.android.desugar.testdata.java8;
 
-import com.google.common.collect.ImmutableList;
-import java.util.List;
-import java.util.stream.Collectors;
+import com.google.devtools.build.android.desugar.testdata.separate8.SeparateInterfaceWithDefaultMethod;
 
-public class ConcreteDefaultInterfaceWithLambda implements DefaultInterfaceWithLambda {
-  static final String ONE = String.valueOf(1);
-
-  @Override
-  public List<String> digits() {
-    return ImmutableList.of(0, 2)
-        .stream()
-        .map(i -> i == 0 ? ONE : String.valueOf(i))
-        .collect(Collectors.toList());
-  }
-}
+/** Test class that inherits default method defined in separate target for testing b/65645388. */
+public class DefaultMethodFromSeparateJava8Target
+    implements SeparateInterfaceWithDefaultMethod {}

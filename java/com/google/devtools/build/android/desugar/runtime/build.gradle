@@ -18,15 +18,14 @@ apply from: "$rootDir/buildSrc/base/baseJava.gradle"
 sourceSets {
     main {
         java {
-	    srcDirs '.'
-	    exclude 'InvocationPolicyEnforcer.java'
-	    exclude 'InvocationPolicyParser.java'
-	    exclude 'testing/**/*.java'
-	}
+            srcDirs '.'
+        }
     }
 }
 
-dependencies {
-    compileOnly 'com.google.code.findbugs:jsr305:3.0.1'
-    implementation 'com.google.guava:guava:21.0'
+jar {
+    archiveName = "libthrowable_extension.jar"
 }
+
+sourceCompatibility = JavaVersion.VERSION_1_7
+targetCompatibility = JavaVersion.VERSION_1_7
