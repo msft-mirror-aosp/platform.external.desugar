@@ -119,7 +119,7 @@ public class Java7Compatibility extends ClassVisitor {
     boolean updated = false;
 
     public UpdateBytecodeVersionIfNecessary(MethodVisitor methodVisitor) {
-      super(Opcodes.ASM5, methodVisitor);
+      super(Opcodes.ASM6, methodVisitor);
     }
 
     @Override

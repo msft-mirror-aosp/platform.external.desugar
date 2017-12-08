@@ -24,7 +24,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSet.Builder;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closer;
 import com.google.devtools.build.android.Converters.ExistingPathConverter;
@@ -358,7 +357,7 @@ class Desugar {
       }
 
       ImmutableSet.Builder<String> interfaceLambdaMethodCollector = ImmutableSet.builder();
-
+      ClassVsInterface interfaceCache = new ClassVsInterface(classpathReader);
       desugarClassesInInput(
           inputFiles,
           outputFileProvider,
@@ -366,6 +365,7 @@ class Desugar {
           classpathReader,
           depsCollector,
           bootclasspathReader,
+          interfaceCache,
           interfaceLambdaMethodCollector);
 
       desugarAndWriteDumpedLambdaClassesToOutput(
@@ -374,6 +374,7 @@ class Desugar {
           classpathReader,
           depsCollector,
           bootclasspathReader,
+          interfaceCache,
           interfaceLambdaMethodCollector.build(),
           bridgeMethodReader);
 
@@ -407,8 +408,7 @@ class Desugar {
                     "com.google.devtools.build.android.desugar.dependencies.MetadataCollector")
                 .getConstructor(Boolean.TYPE)
                 .newInstance(options.tolerateMissingDependencies);
-      } catch (ReflectiveOperationException
-          | SecurityException e) {
+      } catch (ReflectiveOperationException | SecurityException e) {
         throw new IllegalStateException("Can't emit desugaring metadata as requested");
       }
     } else if (options.tolerateMissingDependencies) {
@@ -445,7 +445,8 @@ class Desugar {
       @Nullable ClassReaderFactory classpathReader,
       DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
-      Builder<String> interfaceLambdaMethodCollector)
+      ClassVsInterface interfaceCache,
+      ImmutableSet.Builder<String> interfaceLambdaMethodCollector)
       throws IOException {
     for (String filename : inputFiles) {
       if (OutputFileProvider.DESUGAR_DEPS_FILENAME.equals(filename)) {
@@ -465,6 +466,7 @@ class Desugar {
                   classpathReader,
                   depsCollector,
                   bootclasspathReader,
+                  interfaceCache,
                   interfaceLambdaMethodCollector,
                   writer,
                   reader);
@@ -492,6 +494,7 @@ class Desugar {
       @Nullable ClassReaderFactory classpathReader,
       DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
+      ClassVsInterface interfaceCache,
       ImmutableSet<String> interfaceLambdaMethods,
       @Nullable ClassReaderFactory bridgeMethodReader)
       throws IOException {
@@ -522,10 +525,12 @@ class Desugar {
                 classpathReader,
                 depsCollector,
                 bootclasspathReader,
+                interfaceCache,
                 interfaceLambdaMethods,
                 bridgeMethodReader,
                 lambdaClass.getValue(),
-                writer);
+                writer,
+                reader);
         reader.accept(visitor, 0);
         String filename =
             rewriter.unprefix(lambdaClass.getValue().desiredInternalName()) + ".class";
@@ -564,15 +569,23 @@ class Desugar {
       @Nullable ClassReaderFactory classpathReader,
       DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
+      ClassVsInterface interfaceCache,
       ImmutableSet<String> interfaceLambdaMethods,
       @Nullable ClassReaderFactory bridgeMethodReader,
       LambdaInfo lambdaClass,
-      UnprefixingClassWriter writer) {
+      UnprefixingClassWriter writer,
+      ClassReader input) {
     ClassVisitor visitor = checkNotNull(writer);
     if (!allowTryWithResources) {
+      CloseResourceMethodScanner closeResourceMethodScanner = new CloseResourceMethodScanner();
+      input.accept(closeResourceMethodScanner, ClassReader.SKIP_DEBUG);
       visitor =
           new TryWithResourcesRewriter(
-              visitor, loader, visitedExceptionTypes, numOfTryWithResourcesInvoked);
+              visitor,
+              loader,
+              visitedExceptionTypes,
+              numOfTryWithResourcesInvoked,
+              closeResourceMethodScanner.hasCloseResourceMethod());
     }
     if (!allowCallsToObjectsNonNull) {
       // Not sure whether there will be implicit null check emitted by javac, so we rerun
@@ -591,7 +604,12 @@ class Desugar {
                 visitor, classpathReader, depsCollector, bootclasspathReader, loader);
         visitor =
             new InterfaceDesugaring(
-                visitor, depsCollector, bootclasspathReader, store, options.legacyJacocoFix);
+                visitor,
+                interfaceCache,
+                depsCollector,
+                bootclasspathReader,
+                store,
+                options.legacyJacocoFix);
       }
     }
     visitor =
@@ -621,14 +639,21 @@ class Desugar {
       @Nullable ClassReaderFactory classpathReader,
       DependencyCollector depsCollector,
       ClassReaderFactory bootclasspathReader,
-      Builder<String> interfaceLambdaMethodCollector,
+      ClassVsInterface interfaceCache,
+      ImmutableSet.Builder<String> interfaceLambdaMethodCollector,
       UnprefixingClassWriter writer,
       ClassReader input) {
     ClassVisitor visitor = checkNotNull(writer);
     if (!allowTryWithResources) {
+      CloseResourceMethodScanner closeResourceMethodScanner = new CloseResourceMethodScanner();
+      input.accept(closeResourceMethodScanner, ClassReader.SKIP_DEBUG);
       visitor =
           new TryWithResourcesRewriter(
-              visitor, loader, visitedExceptionTypes, numOfTryWithResourcesInvoked);
+              visitor,
+              loader,
+              visitedExceptionTypes,
+              numOfTryWithResourcesInvoked,
+              closeResourceMethodScanner.hasCloseResourceMethod());
     }
     if (!allowCallsToObjectsNonNull) {
       visitor = new ObjectsRequireNonNullMethodRewriter(visitor);
@@ -645,7 +670,12 @@ class Desugar {
                   visitor, classpathReader, depsCollector, bootclasspathReader, loader);
           visitor =
               new InterfaceDesugaring(
-                  visitor, depsCollector, bootclasspathReader, store, options.legacyJacocoFix);
+                  visitor,
+                  interfaceCache,
+                  depsCollector,
+                  bootclasspathReader,
+                  store,
+                  options.legacyJacocoFix);
         }
       }
       // LambdaDesugaring is relatively expensive, so check first whether we need it.  Additionally,
