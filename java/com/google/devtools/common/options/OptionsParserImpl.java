@@ -21,18 +21,19 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
-import com.google.common.collect.LinkedHashMultimap;
-import com.google.common.collect.Multimap;
 import com.google.devtools.common.options.OptionPriority.PriorityCategory;
 import com.google.devtools.common.options.OptionValueDescription.ExpansionBundle;
 import com.google.devtools.common.options.OptionsParser.OptionDescription;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.annotation.Nullable;
 
 /**
@@ -68,28 +69,21 @@ class OptionsParserImpl {
    */
   private final List<ParsedOptionDescription> parsedOptions = new ArrayList<>();
 
-  /**
-   * The options for use with the canonicalize command are stored separately from parsedOptions so
-   * that invocation policy can modify the values for canonicalization (e.g. override user-specified
-   * values with default values) without corrupting the data used to represent the user's original
-   * invocation for {@link #asListOfExplicitOptions()} and {@link #asCompleteListOfParsedOptions()}.
-   * A LinkedHashMultimap is used so that canonicalization happens in the correct order and multiple
-   * values can be stored for flags that allow multiple values.
-   */
-  private final Multimap<OptionDefinition, ParsedOptionDescription> canonicalizeValues =
-      LinkedHashMultimap.create();
-
   private final List<String> warnings = new ArrayList<>();
+
+  /**
+   * Since parse() expects multiple calls to it with the same {@link PriorityCategory} to be treated
+   * as though the args in the later call have higher priority over the earlier calls, we need to
+   * track the high water mark of option priority at each category. Each call to parse will start at
+   * this level.
+   */
+  private final Map<PriorityCategory, OptionPriority> nextPriorityPerPriorityCategory =
+      Stream.of(PriorityCategory.values())
+          .collect(Collectors.toMap(p -> p, OptionPriority::lowestOptionPriorityAtCategory));
 
   private boolean allowSingleDashLongOptions = false;
 
-  private ArgsPreProcessor argsPreProcessor =
-      new ArgsPreProcessor() {
-        @Override
-        public List<String> preProcess(List<String> args) throws OptionsParsingException {
-          return args;
-        }
-      };
+  private ArgsPreProcessor argsPreProcessor = args -> args;
 
   /** Create a new parser object. Do not accept a null OptionsData object. */
   OptionsParserImpl(OptionsData optionsData) {
@@ -135,36 +129,26 @@ class OptionsParserImpl {
         .collect(toCollection(ArrayList::new));
   }
 
-  /**
-   * Implements {@link OptionsParser#canonicalize}.
-   */
+  /** Implements {@link OptionsParser#canonicalize}. */
   List<String> asCanonicalizedList() {
-    return canonicalizeValues
-        .values()
+    return asCanonicalizedListOfParsedOptions()
         .stream()
-        // Sort implicit requirement options to the end, keeping their existing order, and sort
-        // the other options alphabetically.
-        .sorted(
-            (v1, v2) -> {
-              if (v1.getOptionDefinition().hasImplicitRequirements()) {
-                return v2.getOptionDefinition().hasImplicitRequirements() ? 0 : 1;
-              }
-              if (v2.getOptionDefinition().hasImplicitRequirements()) {
-                return -1;
-              }
-              return v1.getOptionDefinition()
-                  .getOptionName()
-                  .compareTo(v2.getOptionDefinition().getOptionName());
-            })
-        // Ignore expansion options.
-        .filter(value -> !value.getOptionDefinition().isExpansionOption())
         .map(ParsedOptionDescription::getDeprecatedCanonicalForm)
-        .collect(toCollection(ArrayList::new));
+        .collect(ImmutableList.toImmutableList());
   }
 
-  /**
-   * Implements {@link OptionsParser#asListOfEffectiveOptions()}.
-   */
+  /** Implements {@link OptionsParser#canonicalize}. */
+  List<ParsedOptionDescription> asCanonicalizedListOfParsedOptions() {
+    return optionValues
+        .keySet()
+        .stream()
+        .sorted()
+        .map(optionDefinition -> optionValues.get(optionDefinition).getCanonicalInstances())
+        .flatMap(Collection::stream)
+        .collect(ImmutableList.toImmutableList());
+  }
+
+  /** Implements {@link OptionsParser#asListOfOptionValues()}. */
   List<OptionValueDescription> asListOfEffectiveOptions() {
     List<OptionValueDescription> result = new ArrayList<>();
     for (Map.Entry<String, OptionDefinition> mapEntry : optionsData.getAllOptionDefinitions()) {
@@ -196,8 +180,6 @@ class OptionsParserImpl {
 
   OptionValueDescription clearValue(OptionDefinition optionDefinition)
       throws OptionsParsingException {
-    // Actually remove the value from various lists tracking effective options.
-    canonicalizeValues.removeAll(optionDefinition);
     return optionValues.remove(optionDefinition);
   }
 
@@ -282,12 +264,33 @@ class OptionsParserImpl {
    * order.
    */
   List<String> parse(
-      OptionPriority.PriorityCategory priority,
+      PriorityCategory priorityCat,
       Function<OptionDefinition, String> sourceFunction,
       List<String> args)
       throws OptionsParsingException {
-    return parse(
-        OptionPriority.lowestOptionPriorityAtCategory(priority), sourceFunction, null, null, args);
+    ResidueAndPriority residueAndPriority =
+        parse(nextPriorityPerPriorityCategory.get(priorityCat), sourceFunction, null, null, args);
+    nextPriorityPerPriorityCategory.put(priorityCat, residueAndPriority.nextPriority);
+    return residueAndPriority.residue;
+  }
+
+  private static final class ResidueAndPriority {
+    List<String> residue;
+    OptionPriority nextPriority;
+
+    public ResidueAndPriority(List<String> residue, OptionPriority nextPriority) {
+      this.residue = residue;
+      this.nextPriority = nextPriority;
+    }
+  }
+
+  /** Parses the args at the fixed priority. */
+  List<String> parseOptionsFixedAtSpecificPriority(
+      OptionPriority priority, Function<OptionDefinition, String> sourceFunction, List<String> args)
+      throws OptionsParsingException {
+    ResidueAndPriority residueAndPriority =
+        parse(OptionPriority.getLockedPriority(priority), sourceFunction, null, null, args);
+    return residueAndPriority.residue;
   }
 
   /**
@@ -298,7 +301,7 @@ class OptionsParserImpl {
    * <p>The method treats options that have neither an implicitDependent nor an expandedFrom value
    * as explicitly set.
    */
-  private List<String> parse(
+  private ResidueAndPriority parse(
       OptionPriority priority,
       Function<OptionDefinition, String> sourceFunction,
       OptionDefinition implicitDependent,
@@ -325,6 +328,7 @@ class OptionsParserImpl {
           identifyOptionAndPossibleArgument(
               arg, argsIterator, priority, sourceFunction, implicitDependent, expandedFrom);
       handleNewParsedOption(parsedOption);
+      priority = OptionPriority.nextOptionPriority(priority);
     }
 
     // Go through the final values and make sure they are valid values for their option. Unlike any
@@ -334,7 +338,7 @@ class OptionsParserImpl {
       valueDescription.getValue();
     }
 
-    return unparsedArgs;
+    return new ResidueAndPriority(unparsedArgs, priority);
   }
 
   /**
@@ -401,28 +405,23 @@ class OptionsParserImpl {
       // Log explicit options and expanded options in the order they are parsed (can be sorted
       // later). This information is needed to correctly canonicalize flags.
       parsedOptions.add(parsedOption);
-      if (optionDefinition.allowsMultiple()) {
-        canonicalizeValues.put(optionDefinition, parsedOption);
-      } else {
-        canonicalizeValues.replaceValues(optionDefinition, ImmutableList.of(parsedOption));
-      }
     }
 
     if (expansionBundle != null) {
-      List<String> unparsed =
+      ResidueAndPriority residueAndPriority =
           parse(
-              parsedOption.getPriority(),
+              OptionPriority.getLockedPriority(parsedOption.getPriority()),
               o -> expansionBundle.sourceOfExpansionArgs,
               optionDefinition.hasImplicitRequirements() ? optionDefinition : null,
               optionDefinition.isExpansionOption() ? optionDefinition : null,
               expansionBundle.expansionArgs);
-      if (!unparsed.isEmpty()) {
+      if (!residueAndPriority.residue.isEmpty()) {
         if (optionDefinition.isWrapperOption()) {
           throw new OptionsParsingException(
               "Unparsed options remain after unwrapping "
                   + unconvertedValue
                   + ": "
-                  + Joiner.on(' ').join(unparsed));
+                  + Joiner.on(' ').join(residueAndPriority.residue));
         } else {
           // Throw an assertion here, because this indicates an error in the definition of this
           // option's expansion or requirements, not with the input as provided by the user.
@@ -430,7 +429,7 @@ class OptionsParserImpl {
               "Unparsed options remain after processing "
                   + unconvertedValue
                   + ": "
-                  + Joiner.on(' ').join(unparsed));
+                  + Joiner.on(' ').join(residueAndPriority.residue));
         }
       }
     }
