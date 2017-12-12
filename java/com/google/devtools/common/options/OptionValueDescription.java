@@ -14,7 +14,6 @@
 
 package com.google.devtools.common.options;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
@@ -25,6 +24,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 
 /**
  * The value of an option.
@@ -74,6 +74,16 @@ public abstract class OptionValueDescription {
   }
 
   /**
+   * Returns the canonical instances of this option - the instances that affect the current value.
+   *
+   * <p>For options that do not have values in their own right, this should be the empty list. In
+   * contrast, the DefaultOptionValue does not have a canonical form at all, since it was never set,
+   * and is null.
+   */
+  @Nullable
+  public abstract List<ParsedOptionDescription> getCanonicalInstances();
+
+  /**
    * For the given option, returns the correct type of OptionValueDescription, to which unparsed
    * values can be added.
    *
@@ -103,7 +113,7 @@ public abstract class OptionValueDescription {
     return new DefaultOptionValueDescription(option);
   }
 
-  static class DefaultOptionValueDescription extends OptionValueDescription {
+  private static class DefaultOptionValueDescription extends OptionValueDescription {
 
     private DefaultOptionValueDescription(OptionDefinition optionDefinition) {
       super(optionDefinition);
@@ -125,13 +135,18 @@ public abstract class OptionValueDescription {
           "Cannot add values to the default option value. Create a modifiable "
               + "OptionValueDescription using createOptionValueDescription() instead.");
     }
+
+    @Override
+    public ImmutableList<ParsedOptionDescription> getCanonicalInstances() {
+      return null;
+    }
   }
 
   /**
    * The form of a value for a default type of flag, one that does not accumulate multiple values
    * and has no expansion.
    */
-  static class SingleOptionValueDescription extends OptionValueDescription {
+  private static class SingleOptionValueDescription extends OptionValueDescription {
     private ParsedOptionDescription effectiveOptionInstance;
     private Object effectiveValue;
 
@@ -183,6 +198,11 @@ public abstract class OptionValueDescription {
         // Output warnings if there is conflicting options set different values in a way that might
         // not have been obvious to the user, such as through expansions and implicit requirements.
         if (!effectiveValue.equals(newValue)) {
+          boolean samePriorityCategory =
+              parsedOption
+                  .getPriority()
+                  .getPriorityCategory()
+                  .equals(effectiveOptionInstance.getPriority().getPriorityCategory());
           if ((implicitDependent != null) && (optionThatDependsOnEffectiveValue != null)) {
             if (!implicitDependent.equals(optionThatDependsOnEffectiveValue)) {
               warnings.add(
@@ -190,8 +210,7 @@ public abstract class OptionValueDescription {
                       "%s is implicitly defined by both %s and %s",
                       optionDefinition, optionThatDependsOnEffectiveValue, implicitDependent));
             }
-          } else if ((implicitDependent != null)
-              && parsedOption.getPriority().equals(effectiveOptionInstance.getPriority())) {
+          } else if ((implicitDependent != null) && samePriorityCategory) {
             warnings.add(
                 String.format(
                     "%s is implicitly defined by %s; the implicitly set value "
@@ -203,7 +222,7 @@ public abstract class OptionValueDescription {
                     "A new value for %s overrides a previous implicit setting of that "
                         + "option by %s",
                     optionDefinition, optionThatDependsOnEffectiveValue));
-          } else if ((parsedOption.getPriority().equals(effectiveOptionInstance.getPriority()))
+          } else if (samePriorityCategory
               && ((optionThatExpandedToEffectiveValue == null) && (expandedFrom != null))) {
             // Create a warning if an expansion option overrides an explicit option:
             warnings.add(
@@ -227,14 +246,19 @@ public abstract class OptionValueDescription {
       return null;
     }
 
-    @VisibleForTesting
-    ParsedOptionDescription getEffectiveOptionInstance() {
-      return effectiveOptionInstance;
+    @Override
+    public ImmutableList<ParsedOptionDescription> getCanonicalInstances() {
+      // If the current option is an implicit requirement, we don't need to list this value since
+      // the parent implies it. In this case, it is sufficient to not list this value at all.
+      if (effectiveOptionInstance.getImplicitDependent() == null) {
+        return ImmutableList.of(effectiveOptionInstance);
+      }
+      return ImmutableList.of();
     }
   }
 
   /** The form of a value for an option that accumulates multiple values on the command line. */
-  static class RepeatableOptionValueDescription extends OptionValueDescription {
+  private static class RepeatableOptionValueDescription extends OptionValueDescription {
     ListMultimap<OptionPriority, ParsedOptionDescription> parsedOptions;
     ListMultimap<OptionPriority, Object> optionValues;
 
@@ -252,8 +276,10 @@ public abstract class OptionValueDescription {
     public String getSourceString() {
       return parsedOptions
           .asMap()
-          .values()
+          .entrySet()
           .stream()
+          .sorted(Comparator.comparing(Entry::getKey))
+          .map(Entry::getValue)
           .flatMap(Collection::stream)
           .map(ParsedOptionDescription::getSource)
           .distinct()
@@ -289,6 +315,20 @@ public abstract class OptionValueDescription {
       }
       return null;
     }
+
+    @Override
+    public ImmutableList<ParsedOptionDescription> getCanonicalInstances() {
+      return parsedOptions
+          .asMap()
+          .entrySet()
+          .stream()
+          .sorted(Comparator.comparing(Entry::getKey))
+          .map(Entry::getValue)
+          .flatMap(Collection::stream)
+          // Only provide the options that aren't implied elsewhere.
+          .filter(optionDesc -> optionDesc.getImplicitDependent() == null)
+          .collect(ImmutableList.toImmutableList());
+    }
   }
 
   /**
@@ -296,7 +336,7 @@ public abstract class OptionValueDescription {
    * in place to other options. This should be used for both flags with a static expansion defined
    * in {@link Option#expansion()} and flags with an {@link Option#expansionFunction()}.
    */
-  static class ExpansionOptionValueDescription extends OptionValueDescription {
+  private static class ExpansionOptionValueDescription extends OptionValueDescription {
     private final List<String> expansion;
 
     private ExpansionOptionValueDescription(
@@ -337,10 +377,18 @@ public abstract class OptionValueDescription {
               : String.format(
                   "expanded from %s (source %s)", optionDefinition, parsedOption.getSource()));
     }
+
+    @Override
+    public ImmutableList<ParsedOptionDescription> getCanonicalInstances() {
+      // The options this expands to are incorporated in their own right - this option does
+      // not have a canonical form.
+      return ImmutableList.of();
+    }
   }
 
   /** The form of a value for a flag with implicit requirements. */
-  static class OptionWithImplicitRequirementsValueDescription extends SingleOptionValueDescription {
+  private static class OptionWithImplicitRequirementsValueDescription
+      extends SingleOptionValueDescription {
 
     private OptionWithImplicitRequirementsValueDescription(OptionDefinition optionDefinition) {
       super(optionDefinition);
@@ -384,7 +432,7 @@ public abstract class OptionValueDescription {
   }
 
   /** Form for options that contain other options in the value text to which they expand. */
-  static final class WrapperOptionValueDescription extends OptionValueDescription {
+  private static final class WrapperOptionValueDescription extends OptionValueDescription {
 
     WrapperOptionValueDescription(OptionDefinition optionDefinition) {
       super(optionDefinition);
@@ -417,6 +465,13 @@ public abstract class OptionValueDescription {
               ? String.format("unwrapped from %s", optionDefinition)
               : String.format(
                   "unwrapped from %s (source %s)", optionDefinition, parsedOption.getSource()));
+    }
+
+    @Override
+    public ImmutableList<ParsedOptionDescription> getCanonicalInstances() {
+      // No wrapper options get listed in the canonical form - the options they are wrapping will
+      // be in the right place.
+      return ImmutableList.of();
     }
   }
 }
