@@ -14,14 +14,12 @@
 package com.google.devtools.build.android.desugar;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
-import java.util.Optional;
-import javax.annotation.Nullable;
+import java.util.HashMap;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
@@ -43,6 +41,11 @@ public final class BytecodeTypeInference extends MethodVisitor {
   private FrameInfo previousFrame;
   /** For debugging purpose. */
   private final String methodSignature;
+  /**
+   * Stores mapping from "uninitialized" value to concrete value. This is for the "new" instruction.
+   */
+  private final HashMap<InferredType, InferredType> uninitializedToConcreteTypeMap =
+      new HashMap<>();
 
   public BytecodeTypeInference(int access, String owner, String name, String methodDescriptor) {
     super(Opcodes.ASM6);
@@ -76,10 +79,6 @@ public final class BytecodeTypeInference extends MethodVisitor {
 
   public String getOperandStackAsString() {
     return operandStack.toString();
-  }
-
-  public String getLocalsAsString() {
-    return localVariableSlots.toString();
   }
 
   @Override
@@ -477,7 +476,8 @@ public final class BytecodeTypeInference extends MethodVisitor {
       int argumentSize = (Type.getArgumentsAndReturnSizes(desc) >> 2);
       InferredType receiverType = getTypeOfOperandFromTop(argumentSize - 1);
       if (receiverType.isUninitialized()) {
-        InferredType realType = InferredType.createNonUninitializedType('L' + owner + ';');
+        InferredType realType = InferredType.create('L' + owner + ';');
+        uninitializedToConcreteTypeMap.put(receiverType, realType);
         replaceUninitializedTypeInStack(receiverType, realType);
       }
     }
@@ -642,6 +642,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
     operandStack.addAll(previousFrame.stack());
     localVariableSlots.clear();
     localVariableSlots.addAll(previousFrame.locals());
+
     super.visitFrame(type, nLocal, local, nStack, stack);
   }
 
@@ -671,7 +672,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
     checkArgument(oldType.isUninitialized(), "The old type is NOT uninitialized. %s", oldType);
     for (int i = 0, size = operandStack.size(); i < size; ++i) {
       InferredType type = operandStack.get(i);
-      if (type.equals(oldType)) {
+      if (type == oldType) {
         operandStack.set(i, newType);
       }
     }
@@ -702,7 +703,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
         break;
       case 'L':
       case '[':
-        push(InferredType.createNonUninitializedType(desc.substring(index)));
+        push(InferredType.create(desc.substring(index)));
         break;
       default:
         throw new RuntimeException("Unhandled type: " + desc);
@@ -770,6 +771,12 @@ public final class BytecodeTypeInference extends MethodVisitor {
     return lastPopped;
   }
 
+  private static ImmutableList<InferredType> removeBackFromList(
+      ImmutableList<InferredType> list, int countToRemove) {
+    int newSize = list.size() - countToRemove;
+    return list.subList(0, newSize);
+  }
+
   /**
    * Create the types of local variables at the very beginning of the method with the information of
    * the declaring class and the method descriptor.
@@ -780,7 +787,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
 
     if (!BitFlags.isSet(access, Opcodes.ACC_STATIC)) {
       // Instance method, and this is the receiver
-      types.add(InferredType.createNonUninitializedType(convertToDescriptor(ownerClass)));
+      types.add(InferredType.create(convertToDescriptor(ownerClass)));
     }
     Type[] argumentTypes = Type.getArgumentTypes(methodDescriptor);
     for (Type argumentType : argumentTypes) {
@@ -805,7 +812,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
           break;
         case Type.ARRAY:
         case Type.OBJECT:
-          types.add(InferredType.createNonUninitializedType(argumentType.getDescriptor()));
+          types.add(InferredType.create(argumentType.getDescriptor()));
           break;
         default:
           throw new RuntimeException(
@@ -819,28 +826,6 @@ public final class BytecodeTypeInference extends MethodVisitor {
       }
     }
     return types;
-  }
-
-  private static ImmutableList<InferredType> removeBackFromList(
-      ImmutableList<InferredType> list, int countToRemove) {
-    int origSize = list.size();
-    int index = origSize - 1;
-
-    while (index >= 0 && countToRemove > 0) {
-      InferredType type = list.get(index);
-      if (type.equals(InferredType.TOP) && index > 0 && list.get(index - 1).isCategory2()) {
-        --index; // A category 2 takes two slots.
-      }
-      --index; // Eat this local variable.
-      --countToRemove;
-    }
-    checkState(
-        countToRemove == 0,
-        "countToRemove is %s but not 0. index=%s, list=%s",
-        countToRemove,
-        index,
-        list);
-    return list.subList(0, index + 1);
   }
 
   private ImmutableList<InferredType> appendArrayToList(
@@ -876,13 +861,13 @@ public final class BytecodeTypeInference extends MethodVisitor {
     } else if (typeInStackMapFrame instanceof String) {
       String referenceTypeName = (String) typeInStackMapFrame;
       if (referenceTypeName.charAt(0) == '[') {
-        return InferredType.createNonUninitializedType(referenceTypeName);
+        return InferredType.create(referenceTypeName);
       } else {
-        return InferredType.createNonUninitializedType('L' + referenceTypeName + ';');
+        return InferredType.create('L' + referenceTypeName + ';');
       }
     } else if (typeInStackMapFrame instanceof Label) {
       Label label = (Label) typeInStackMapFrame;
-      return InferredType.createUninitializedType(label);
+      return InferredType.createUninitialized(label.getOffset());
     } else {
       throw new RuntimeException(
           "Cannot reach here. Unhandled element: value="
@@ -926,45 +911,26 @@ public final class BytecodeTypeInference extends MethodVisitor {
     public static final String UNINITIALIZED_PREFIX = "UNINIT@";
 
     public static final InferredType BOOLEAN =
-        new AutoValue_BytecodeTypeInference_InferredType("Z", /*uninitializationLabel=*/ null);
-    public static final InferredType BYTE =
-        new AutoValue_BytecodeTypeInference_InferredType("B", /*uninitializationLabel=*/ null);
-    public static final InferredType INT =
-        new AutoValue_BytecodeTypeInference_InferredType("I", /*uninitializationLabel=*/ null);
-    public static final InferredType FLOAT =
-        new AutoValue_BytecodeTypeInference_InferredType("F", /*uninitializationLabel=*/ null);
-    public static final InferredType LONG =
-        new AutoValue_BytecodeTypeInference_InferredType("J", /*uninitializationLabel=*/ null);
-    public static final InferredType DOUBLE =
-        new AutoValue_BytecodeTypeInference_InferredType("D", /*uninitializationLabel=*/ null);
+        new AutoValue_BytecodeTypeInference_InferredType("Z");
+    public static final InferredType BYTE = new AutoValue_BytecodeTypeInference_InferredType("B");
+    public static final InferredType INT = new AutoValue_BytecodeTypeInference_InferredType("I");
+    public static final InferredType FLOAT = new AutoValue_BytecodeTypeInference_InferredType("F");
+    public static final InferredType LONG = new AutoValue_BytecodeTypeInference_InferredType("J");
+    public static final InferredType DOUBLE = new AutoValue_BytecodeTypeInference_InferredType("D");
     /** Not a real value. */
-    public static final InferredType TOP =
-        new AutoValue_BytecodeTypeInference_InferredType("TOP", /*uninitializationLabel=*/ null);
+    public static final InferredType TOP = new AutoValue_BytecodeTypeInference_InferredType("TOP");
     /** The value NULL */
     public static final InferredType NULL =
-        new AutoValue_BytecodeTypeInference_InferredType("NULL", /*uninitializationLabel=*/ null);
+        new AutoValue_BytecodeTypeInference_InferredType("NULL");
 
     public static final InferredType UNINITIALIZED_THIS =
-        new AutoValue_BytecodeTypeInference_InferredType(
-            "UNINITIALIZED_THIS", /*uninitializationLabel=*/ null);
+        new AutoValue_BytecodeTypeInference_InferredType("UNINITIALIZED_THIS");
 
-    /**
-     * Create a type for a value. This method is not intended to be called outside of this class.
-     */
-    private static InferredType create(String descriptor, @Nullable Label uninitializationLabel) {
-      if (UNINITIALIZED_PREFIX.equals(descriptor)) {
-        return new AutoValue_BytecodeTypeInference_InferredType(
-            UNINITIALIZED_PREFIX, checkNotNull(uninitializationLabel));
-      }
-      checkArgument(
-          uninitializationLabel == null,
-          "The uninitializationLabel should be null for non-uninitialized value. %s",
-          descriptor);
+    static InferredType create(String descriptor) {
       char firstChar = descriptor.charAt(0);
-      if (firstChar == 'L' || firstChar == '[') {
-        // Reference, array.
-        return new AutoValue_BytecodeTypeInference_InferredType(
-            descriptor, /*uninitializationLabel=*/ null);
+      if (firstChar == 'L' || firstChar == '[' || descriptor.startsWith(UNINITIALIZED_PREFIX)) {
+        // Reference, array, or uninitialized values.
+        return new AutoValue_BytecodeTypeInference_InferredType(descriptor);
       }
       switch (descriptor) {
         case "Z":
@@ -990,23 +956,12 @@ public final class BytecodeTypeInference extends MethodVisitor {
       }
     }
 
-    /** Creates all types except UNINITIALIZED. This method can also create UNINTIALIZED_THIS. */
-    static InferredType createNonUninitializedType(String descriptor) {
-      return create(descriptor, /*uninitializationLabel=*/ null);
-    }
-
-    /** Create a type for an UNINITIALIZED value. The uninitializationLabel is generated by ASM. */
-    static InferredType createUninitializedType(Label uninitializationLabel) {
-      return create(UNINITIALIZED_PREFIX, uninitializationLabel);
+    /** Create a type for uninitialized value. The label is generated by ASM. */
+    static InferredType createUninitialized(int label) {
+      return create(UNINITIALIZED_PREFIX + label);
     }
 
     abstract String descriptor();
-    /**
-     * The label may be null. This field is meaningful if the current type is "UNINITIALIZED". For
-     * other types, this field is null.
-     */
-    @Nullable
-    abstract Label uninitializationLabel();
 
     @Override
     public String toString() {
@@ -1023,7 +978,7 @@ public final class BytecodeTypeInference extends MethodVisitor {
     public InferredType getElementTypeIfArrayOrThrow() {
       String descriptor = descriptor();
       checkState(descriptor.charAt(0) == '[', "This type %s is not an array.", this);
-      return createNonUninitializedType(descriptor.substring(1));
+      return create(descriptor.substring(1));
     }
 
     /** Is an uninitialized value? */
@@ -1037,16 +992,17 @@ public final class BytecodeTypeInference extends MethodVisitor {
     }
 
     /**
-     * If this type is a reference type, then return the internal name. Otherwise, returns empty.
+     * If this type is a reference type, then return the internal name. Otherwise, throw an
+     * exception.
      */
-    public Optional<String> getInternalName() {
+    public String getInternalNameOrThrow() {
       String descriptor = descriptor();
       int length = descriptor.length();
-      if (length > 0 && descriptor.charAt(0) == 'L' && descriptor.charAt(length - 1) == ';') {
-        return Optional.of(descriptor.substring(1, length - 1));
-      } else {
-        return Optional.empty();
-      }
+      checkState(
+          descriptor.charAt(0) == 'L' && descriptor.charAt(length - 1) == ';',
+          "The type is expected to be either a class or an interface: %s",
+          descriptor);
+      return descriptor.substring(1, length - 1);
     }
   }
 }
