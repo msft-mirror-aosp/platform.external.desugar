@@ -31,7 +31,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.android.desugar.BytecodeTypeInference.InferredType;
 import java.util.Collections;
 import java.util.LinkedHashSet;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
@@ -292,16 +291,10 @@ public class TryWithResourcesRewriter extends ClassVisitor {
           // Check the exception type.
           InferredType exceptionClass = typeInference.getTypeOfOperandFromTop(1);
           if (!exceptionClass.isNull()) {
-            Optional<String> exceptionClassInternalName = exceptionClass.getInternalName();
-            checkState(
-                exceptionClassInternalName.isPresent(),
-                "The exception %s is not a reference type in %s.%s",
-                exceptionClass,
-                internalName,
-                methodSignature);
+            String exceptionClassInternalName = exceptionClass.getInternalNameOrThrow();
             checkState(
                 isAssignableFrom(
-                    "java.lang.Throwable", exceptionClassInternalName.get().replace('/', '.')),
+                    "java.lang.Throwable", exceptionClassInternalName.replace('/', '.')),
                 "The exception type %s in %s.%s should be a subclass of java.lang.Throwable.",
                 exceptionClassInternalName,
                 internalName,
@@ -309,26 +302,20 @@ public class TryWithResourcesRewriter extends ClassVisitor {
           }
         }
 
-        InferredType resourceType = typeInference.getTypeOfOperandFromTop(0);
-        Optional<String> resourceClassInternalName = resourceType.getInternalName();
-        checkState(
-            resourceClassInternalName.isPresent(),
-            "The resource class %s is not a reference type in %s.%s",
-            resourceType,
-            internalName,
-            methodSignature);
+        String resourceClassInternalName =
+            typeInference.getTypeOfOperandFromTop(0).getInternalNameOrThrow();
         checkState(
             isAssignableFrom(
-                "java.lang.AutoCloseable", resourceClassInternalName.get().replace('/', '.')),
+                "java.lang.AutoCloseable", resourceClassInternalName.replace('/', '.')),
             "The resource type should be a subclass of java.lang.AutoCloseable: %s",
             resourceClassInternalName);
 
-        resourceTypeInternalNames.add(resourceClassInternalName.get());
+        resourceTypeInternalNames.add(resourceClassInternalName);
         super.visitMethodInsn(
             opcode,
             owner,
             "$closeResource",
-            "(Ljava/lang/Throwable;L" + resourceClassInternalName.get() + ";)V",
+            "(Ljava/lang/Throwable;L" + resourceClassInternalName + ";)V",
             itf);
         return;
       }
