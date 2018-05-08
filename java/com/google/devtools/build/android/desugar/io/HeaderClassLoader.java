@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package com.google.devtools.build.android.desugar;
+package com.google.devtools.build.android.desugar.io;
 
 import com.google.common.collect.ImmutableList;
 import java.io.IOError;
@@ -33,7 +33,7 @@ import org.objectweb.asm.Opcodes;
  *
  * @see java.net.URLClassLoader
  */
-class HeaderClassLoader extends ClassLoader {
+public class HeaderClassLoader extends ClassLoader {
 
   private final IndexedInputs indexedInputs;
   private final CoreLibraryRewriter rewriter;
@@ -58,7 +58,8 @@ class HeaderClassLoader extends ClassLoader {
       // Have ASM compute maxs so we don't need to figure out how many formal parameters there are
       ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
       ImmutableList<FieldInfo> interfaceFieldNames = getFieldsIfReaderIsInterface(reader);
-      reader.accept(new CodeStubber(writer, interfaceFieldNames), 0);
+      // TODO(kmb): Consider SKIP_CODE and stubbing everything so class loader doesn't verify code
+      reader.accept(new CodeStubber(writer, interfaceFieldNames), ClassReader.SKIP_DEBUG);
       bytecode = writer.toByteArray();
     } catch (IOException e) {
       throw new IOError(e);
