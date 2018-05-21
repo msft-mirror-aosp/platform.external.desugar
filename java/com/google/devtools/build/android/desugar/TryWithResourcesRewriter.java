@@ -29,8 +29,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.android.desugar.BytecodeTypeInference.InferredType;
+import com.google.devtools.build.android.desugar.io.BitFlags;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
@@ -164,14 +166,12 @@ public class TryWithResourcesRewriter extends ClassVisitor {
             new CloseResourceMethodSpecializer(cv, resourceInternalName, isInterface));
       }
     } else {
+      // It is possible that all calls to $closeResources(...) are in dead code regions, and the
+      // calls are eliminated, which leaving the method $closeResources() unused. (b/78030676).
+      // In this case, we just discard the method body.
       checkState(
-          closeResourceMethod == null,
-          "The field resourceTypeInternalNames is empty. "
-              + "But the class has the $closeResource method.");
-      checkState(
-          !hasCloseResourceMethod,
-          "The class %s has close resource method, but resourceTypeInternalNames is empty.",
-          internalName);
+          !hasCloseResourceMethod || closeResourceMethod != null,
+          "There should be $closeResources(...) in the class file.");
     }
     super.visitEnd();
   }
@@ -291,10 +291,16 @@ public class TryWithResourcesRewriter extends ClassVisitor {
           // Check the exception type.
           InferredType exceptionClass = typeInference.getTypeOfOperandFromTop(1);
           if (!exceptionClass.isNull()) {
-            String exceptionClassInternalName = exceptionClass.getInternalNameOrThrow();
+            Optional<String> exceptionClassInternalName = exceptionClass.getInternalName();
+            checkState(
+                exceptionClassInternalName.isPresent(),
+                "The exception %s is not a reference type in %s.%s",
+                exceptionClass,
+                internalName,
+                methodSignature);
             checkState(
                 isAssignableFrom(
-                    "java.lang.Throwable", exceptionClassInternalName.replace('/', '.')),
+                    "java.lang.Throwable", exceptionClassInternalName.get().replace('/', '.')),
                 "The exception type %s in %s.%s should be a subclass of java.lang.Throwable.",
                 exceptionClassInternalName,
                 internalName,
@@ -302,20 +308,28 @@ public class TryWithResourcesRewriter extends ClassVisitor {
           }
         }
 
-        String resourceClassInternalName =
-            typeInference.getTypeOfOperandFromTop(0).getInternalNameOrThrow();
-        checkState(
-            isAssignableFrom(
-                "java.lang.AutoCloseable", resourceClassInternalName.replace('/', '.')),
-            "The resource type should be a subclass of java.lang.AutoCloseable: %s",
-            resourceClassInternalName);
-
-        resourceTypeInternalNames.add(resourceClassInternalName);
+        InferredType resourceType = typeInference.getTypeOfOperandFromTop(0);
+        Optional<String> resourceClassInternalName = resourceType.getInternalName();
+        {
+          // Check the resource type.
+          checkState(
+              resourceClassInternalName.isPresent(),
+              "The resource class %s is not a reference type in %s.%s",
+              resourceType,
+              internalName,
+              methodSignature);
+          String resourceClassName = resourceClassInternalName.get().replace('/', '.');
+          checkState(
+              hasCloseMethod(resourceClassName),
+              "The resource class %s should have a close() method.",
+              resourceClassName);
+        }
+        resourceTypeInternalNames.add(resourceClassInternalName.get());
         super.visitMethodInsn(
             opcode,
             owner,
             "$closeResource",
-            "(Ljava/lang/Throwable;L" + resourceClassInternalName + ";)V",
+            "(Ljava/lang/Throwable;L" + resourceClassInternalName.get() + ";)V",
             itf);
         return;
       }
@@ -341,6 +355,26 @@ public class TryWithResourcesRewriter extends ClassVisitor {
         return true; // The owner is an exception that has been visited before.
       }
       return isAssignableFrom("java.lang.Throwable", owner.replace('/', '.'));
+    }
+
+    private boolean hasCloseMethod(String resourceClassName) {
+      try {
+        Class<?> klass = classLoader.loadClass(resourceClassName);
+        klass.getMethod("close");
+        return true;
+      } catch (ClassNotFoundException e) {
+        throw new AssertionError(
+            "Failed to load class "
+                + resourceClassName
+                + " when desugaring method "
+                + internalName
+                + "."
+                + methodSignature,
+            e);
+      } catch (NoSuchMethodException e) {
+        // There is no close() method in the class, so return false.
+        return false;
+      }
     }
 
     private boolean isAssignableFrom(String baseClassName, String subClassName) {

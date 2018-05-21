@@ -11,10 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package com.google.devtools.build.android.desugar;
+package com.google.devtools.build.android.desugar.io;
 
 import java.io.IOException;
 import java.io.InputStream;
+import javax.annotation.Nullable;
 import org.objectweb.asm.Attribute;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
@@ -24,7 +25,7 @@ import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.Remapper;
 
 /** Utility class to prefix or unprefix class names of core library classes */
-class CoreLibraryRewriter {
+public class CoreLibraryRewriter {
   private final String prefix;
 
   public CoreLibraryRewriter(String prefix) {
@@ -85,6 +86,10 @@ class CoreLibraryRewriter {
     return false;
   }
 
+  public String getPrefix() {
+    return prefix;
+  }
+
   /** Removes prefix from class names */
   public String unprefix(String typeName) {
     if (prefix.isEmpty() || !typeName.startsWith(prefix)) {
@@ -116,6 +121,26 @@ class CoreLibraryRewriter {
       super.accept(cv, attrs, flags);
     }
 
+    @Override
+    public String getClassName() {
+      return prefix(super.getClassName());
+    }
+
+    @Override
+    public String getSuperName() {
+      String result = super.getSuperName();
+      return result != null ? prefix(result) : null;
+    }
+
+    @Override
+    public String[] getInterfaces() {
+      String[] result = super.getInterfaces();
+      for (int i = 0, len = result.length; i < len; ++i) {
+        result[i] = prefix(result[i]);
+      }
+      return result;
+    }
+
     /** Prefixes core library class names with prefix. */
     private String prefix(String typeName) {
       if (shouldPrefix(typeName)) {
@@ -132,6 +157,8 @@ class CoreLibraryRewriter {
   public class UnprefixingClassWriter extends ClassVisitor {
     private final ClassWriter writer;
 
+    private String finalClassName;
+
     UnprefixingClassWriter(int flags) {
       super(Opcodes.ASM6);
       this.writer = new ClassWriter(flags);
@@ -139,7 +166,7 @@ class CoreLibraryRewriter {
       if (!prefix.isEmpty()) {
         this.cv =
             new ClassRemapper(
-                this.cv,
+                this.writer,
                 new Remapper() {
                   @Override
                   public String map(String typeName) {
@@ -149,8 +176,26 @@ class CoreLibraryRewriter {
       }
     }
 
-    byte[] toByteArray() {
+    /** Returns the (unprefixed) name of the class once written. */
+    @Nullable
+    public String getClassName() {
+      return finalClassName;
+    }
+
+    public byte[] toByteArray() {
       return writer.toByteArray();
+    }
+
+    @Override
+    public void visit(
+        int version,
+        int access,
+        String name,
+        String signature,
+        String superName,
+        String[] interfaces) {
+      finalClassName = unprefix(name);
+      super.visit(version, access, name, signature, superName, interfaces);
     }
   }
 }
