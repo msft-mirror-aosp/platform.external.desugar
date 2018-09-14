@@ -28,8 +28,8 @@ java_library_host {
     },
 
     // Use Dagger2 annotation processor
-    annotation_processors: ["dagger2-auto-value-host"],
-    libs: ["dagger2-auto-value-host"],
+    annotation_processors: ["dagger2-auto-value"],
+    libs: ["dagger2-auto-value"],
     // b/25860419: annotation processors must be explicitly specified for grok
     annotation_processor_classes: [
         "com.google.auto.value.processor.AutoValueProcessor",
