@@ -30,7 +30,8 @@ java_library(
     neverlink = 1,
     visibility = ["//visibility:private"],
     exports = [
-        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value/1.3:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value-annotations/1.6:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value/1.6:jar",
         "//prebuilts/tools/common/m2/repository/com/google/code/findbugs/jsr305/3.0.1:jar",
         "//prebuilts/tools/common/m2/repository/com/google/errorprone/error_prone_annotations/2.0.18:jar",
     ],
@@ -41,6 +42,7 @@ java_plugin(
     processor_class = "com.google.auto.value.processor.AutoValueProcessor",
     visibility = ["//visibility:private"],
     deps = [
-        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value/1.3:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value-annotations/1.6:jar",
+        "//prebuilts/tools/common/m2/repository/com/google/auto/value/auto-value/1.6:jar",
     ],
 )
