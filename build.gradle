@@ -30,6 +30,7 @@ sourceSets {
 // these have to match the dependencies found in Android.mk
 dependencies {
     compileOnly 'com.google.code.findbugs:jsr305:3.0.1'
+    annotationProcessor 'com.google.auto.value:auto-value:1.3'
     compileOnly 'com.google.auto.value:auto-value:1.3'
     compileOnly 'com.google.errorprone:error_prone_annotations:2.0.18'
 
@@ -69,4 +70,3 @@ configurations {
 artifacts {
     fatJar fatJarCreator
 }
-
