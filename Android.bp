@@ -22,7 +22,6 @@ java_library_host {
         "jsr305-3.0.1",
     ],
 
-    // Use Dagger2 annotation processor
-    plugins: ["dagger2-auto-value"],
-    libs: ["dagger2-auto-value"],
+    plugins: ["auto_value_plugin"],
+    libs: ["auto_value_annotations"],
 }
