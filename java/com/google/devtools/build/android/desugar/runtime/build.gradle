@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-apply from: "$rootDir/buildSrc/base/baseJava.gradle"
+apply plugin: 'com.android.tools.java-library'
 
 sourceSets {
     main {
